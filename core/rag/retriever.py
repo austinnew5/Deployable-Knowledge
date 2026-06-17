@@ -617,6 +617,7 @@ def embed_directory(
             filter_chunks=filter_chunks,
             include_image_ocr=True,
         )
+<<<<<<< Updated upstream
 
 
 def search(query: str, top_k: int = 5, exclude_sources: Optional[set] = None) -> List[Dict]:
@@ -680,3 +681,6 @@ def search(query: str, top_k: int = 5, exclude_sources: Optional[set] = None) ->
             if len(merged) >= top_k:
                 break
     return merged[:top_k]
+=======
+        
+>>>>>>> Stashed changes
