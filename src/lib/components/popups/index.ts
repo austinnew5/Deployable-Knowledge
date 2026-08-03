@@ -4,3 +4,4 @@ export { default as DocumentTagPickerPopup } from './DocumentTagPickerPopup.svel
 export { default as ProgressPopup } from './ProgressPopup.svelte';
 export { default as PromptTemplatePopup } from './PromptTemplatePopup.svelte';
 export { default as ThemePopup } from './ThemePopup.svelte';
+export { default as WelcomePopup } from './WelcomePopup.svelte';

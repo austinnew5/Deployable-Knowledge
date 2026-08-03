@@ -4,9 +4,11 @@
   import EngineHeartbeat from "$lib/components/layout/EngineHeartbeat.svelte";
   import Icon from "$lib/components/utils/Icon.svelte";
   import ThemePopup from "$lib/components/popups/ThemePopup.svelte";
+  import WelcomePopup from "$lib/components/popups/WelcomePopup.svelte";
   import favicon from "$lib/assets/icon.svg";
 
   import { applyThemeSettings, readThemeSettings } from "$lib/utils/theme";
+  import { hasSeenWelcome, markWelcomeSeen } from "$lib/utils/welcomeState";
   import { showWindow, windowPlacements } from "$lib/utils/workspaceState";
   import { windowDefinitions } from "$lib/components/windows";
   import type { AppState } from "$lib/state.svelte";
@@ -16,9 +18,11 @@
   let toolsOpen = $state(false);
   let userOpen = $state(false);
   let themePopupOpen = $state(false);
+  let welcomePopupOpen = $state(false);
 
   onMount(() => {
     applyThemeSettings(readThemeSettings());
+    if (!hasSeenWelcome()) welcomePopupOpen = true;
   });
 
   function openThemePopup() {
@@ -26,6 +30,18 @@
     toolsOpen = false;
     userOpen = false;
     themePopupOpen = true;
+  }
+
+  function openWelcomePopup() {
+    menuOpen = false;
+    toolsOpen = false;
+    userOpen = false;
+    welcomePopupOpen = true;
+  }
+
+  function closeWelcomePopup() {
+    welcomePopupOpen = false;
+    markWelcomeSeen();
   }
 
   function restoreWindow(id: string) {
@@ -103,6 +119,12 @@
         role="menuitem"
         onclick={openThemePopup}>Theme</button
       >
+      <button
+        class="menu-item"
+        type="button"
+        role="menuitem"
+        onclick={openWelcomePopup}>Welcome / Setup Guide</button
+      >
     </Dropdown>
 
     <Dropdown id="tools_menu" bind:open={toolsOpen} minWidth="220px">
@@ -176,6 +198,7 @@
 </header>
 
 <ThemePopup open={themePopupOpen} onClose={() => (themePopupOpen = false)} />
+<WelcomePopup open={welcomePopupOpen} onClose={closeWelcomePopup} />
 
 <style>
   .app-header {
