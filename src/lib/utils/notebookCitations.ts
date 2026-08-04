@@ -1,4 +1,4 @@
-import { documentPdfPageUrl } from "$lib/utils/documentReferences";
+import { documentPdfPageUrl, isBrowserViewableSourceType } from "$lib/utils/documentReferences";
 
 export type NotebookCitationSource = {
   documentId: string;
@@ -26,7 +26,7 @@ export function formatNotebookCitation(
   const page = source.pageIndex + 1;
   const label = `${title}, p. ${page}`;
 
-  if (source.sourceType === "PDF") {
+  if (isBrowserViewableSourceType(source.sourceType)) {
     const href = documentPdfPageUrl(source.documentId, source.pageIndex);
     return `([${label}](${href}))`;
   }
@@ -151,13 +151,11 @@ function formatCitationTableRow(source: NotebookCitationSource): string {
     source.documentTitle.trim() || "Source",
   );
   const page = Math.max(1, Math.floor(source.pageIndex) + 1);
-  const sourceCell = source.sourceType === "PDF"
+  const sourceCell = isBrowserViewableSourceType(source.sourceType)
     ? `[${title}](${documentPdfPageUrl(source.documentId, source.pageIndex)})`
     : title;
 
-  return `| ${sourceCell} | ${page} | ${
-    source.sourceType === "PDF" ? "PDF" : "Notebook"
-  } |`;
+  return `| ${sourceCell} | ${page} | ${source.sourceType} |`;
 }
 
 function escapeMarkdownLabel(value: string): string {

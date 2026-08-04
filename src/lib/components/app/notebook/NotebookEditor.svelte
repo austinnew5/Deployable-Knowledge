@@ -10,6 +10,7 @@
 		notes: string;
 		onInput: () => void;
 		pageLimit: number;
+		textareaRef?: HTMLTextAreaElement | null;
 	}
 
 	let {
@@ -20,13 +21,15 @@
 		nearLimit = false,
 		notes = $bindable(),
 		onInput,
-		pageLimit
+		pageLimit,
+		textareaRef = $bindable(null)
 	}: Props = $props();
 </script>
 
 <div class="relative min-h-0">
 	<Textarea
 		class="h-full min-h-0 resize-none rounded-none border-0 bg-transparent px-4 py-3 pb-8 shadow-none focus-visible:border-transparent focus-visible:ring-0"
+		bind:ref={textareaRef}
 		bind:value={notes}
 		maxlength={pageLimit}
 		oninput={onInput}

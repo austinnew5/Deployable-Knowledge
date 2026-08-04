@@ -12,11 +12,17 @@
   import BaseWindow from "$lib/components/windows/BaseWindow.svelte";
   import Icon from "$lib/components/utils/Icon.svelte";
   import { showToast } from "$lib/components/utils/ToastHost.svelte";
-  import { documentPdfPageUrl } from "$lib/utils/documentReferences";
+  import { documentPdfPageUrl, isBrowserViewableSourceType } from "$lib/utils/documentReferences";
   import { renderMarkdown } from "$lib/utils/markdown";
   import {
     insertNotebookSourceCitation,
   } from "$lib/utils/notebookCitations";
+  import {
+    lineAtPreviewScrollTop,
+    lineAtTextareaScrollTop,
+    scrollPreviewToLine,
+    scrollTextareaToLine,
+  } from "$lib/utils/scrollLineSync";
   import type { NotebookSearchResult } from "$lib/utils/notebookSearch";
   import {
     NOTEBOOK_CONTEXT_CHANGED_EVENT,
@@ -78,6 +84,7 @@
 
   let notes = $state("");
   let notesTextarea = $state<HTMLTextAreaElement>();
+  let notesPreviewEl = $state<HTMLDivElement>();
   let previewMode = $state(false);
   let notebookView = $state<NotebookView>("editor");
   let loading = $state(false);
@@ -600,9 +607,24 @@
     saveStatus = "Sent to chat";
   }
 
-  function togglePreviewMode() {
+  async function togglePreviewMode() {
     if (notebookLocked) return;
-    previewMode = !previewMode;
+    // Match position by source line, not by scroll fraction - rendered
+    // markdown (headings, code blocks, spacing) doesn't scale 1:1 with raw
+    // line count, so matching by height ratio alone drifts on real notes.
+    if (!previewMode) {
+      const line = notesTextarea
+        ? lineAtTextareaScrollTop(notesTextarea, notes)
+        : 0;
+      previewMode = true;
+      await tick();
+      if (notesPreviewEl) scrollPreviewToLine(notesPreviewEl, line);
+    } else {
+      const line = notesPreviewEl ? lineAtPreviewScrollTop(notesPreviewEl) : 0;
+      previewMode = false;
+      await tick();
+      if (notesTextarea) scrollTextareaToLine(notesTextarea, notes, line);
+    }
   }
 
   function toggleNotebookExport() {
@@ -781,6 +803,33 @@
     const disposition = response.headers.get("Content-Disposition") ?? "";
     const filename =
       disposition.match(/filename="([^"]+)"/)?.[1] ?? fallbackFilename;
+
+    if (window.showSaveFilePicker) {
+      try {
+        const extension = filename.includes(".") ? `.${filename.split(".").pop()}` : "";
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: extension
+            ? [
+                {
+                  description: `${extension.slice(1).toUpperCase()} file`,
+                  accept: { [blob.type || "application/octet-stream"]: [extension] },
+                },
+              ]
+            : undefined,
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return;
+      } catch (error) {
+        // User cancelled the save dialog — not an error, just stop.
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        // Otherwise (e.g. picker unsupported at runtime) fall through to the
+        // plain-download path below.
+      }
+    }
+
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = href;
@@ -1109,7 +1158,7 @@
                       </div>
                       <p class="source-preview">{source.preview}</p>
                       <div class="source-row-actions">
-                        {#if source.sourceType === "PDF"}
+                        {#if isBrowserViewableSourceType(source.sourceType)}
                           <a
                             class="source-reference"
                             href={documentPdfPageUrl(source.documentId, source.pageIndex)}
@@ -1118,7 +1167,7 @@
                             title={`Open ${source.documentTitle} at page ${source.pageIndex + 1}`}
                           >
                             <Icon name="open_in_new" size={14} />
-                            Open PDF page {source.pageIndex + 1}
+                            Open page {source.pageIndex + 1}
                           </a>
                         {/if}
                         <button
@@ -1370,17 +1419,19 @@
             Send to Chat
           </button>
         {/if}
-        {#if previewMode}
-          <div class="notebook-preview" aria-label="Notebook preview">
-            {#if notes.trim()}
-              <div class="msg-md">{@html renderMarkdown(notes)}</div>
-            {:else}
-              <p class="notebook-preview-empty">Nothing to preview yet.</p>
-            {/if}
-          </div>
-        {:else}
+        <div class="notebook-editor-stack">
+          {#if previewMode}
+            <div class="notebook-preview" bind:this={notesPreviewEl} aria-label="Notebook preview">
+              {#if notes.trim()}
+                <div class="msg-md">{@html renderMarkdown(notes)}</div>
+              {:else}
+                <p class="notebook-preview-empty">Nothing to preview yet.</p>
+              {/if}
+            </div>
+          {/if}
           <textarea
             class="notebook-textarea"
+            class:notebook-textarea-hidden={previewMode}
             bind:this={notesTextarea}
             bind:value={notes}
             maxlength={currentPageCharacterLimit}
@@ -1396,7 +1447,7 @@
             placeholder="Write notes here..."
             aria-label="Notebook notes"
           ></textarea>
-        {/if}
+        </div>
         <div
           class="notebook-character-count"
           class:warning={notebookNearLimit && !notebookAtLimit}
@@ -2032,13 +2083,28 @@
     color: var(--text);
     line-height: 1.45;
     resize: none;
-    flex: 1 1 auto;
+    grid-area: 1 / 1;
+  }
+  /* Hidden (not unmounted, not resized) while previewing, so its box never
+     changes size - only visibility toggles - and scroll position and cursor
+     survive toggling back to edit mode instead of resetting to the top. */
+  .notebook-textarea-hidden {
+    visibility: hidden;
+    pointer-events: none;
   }
   .notebook-editor-wrap {
     position: relative;
     display: flex;
     min-height: 0;
     flex-direction: column;
+    flex: 1 1 auto;
+  }
+  .notebook-editor-stack {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    min-height: 0;
     flex: 1 1 auto;
   }
 
@@ -2091,7 +2157,7 @@
     min-height: 0;
     padding: 14px;
     overflow: auto;
-    flex: 1 1 auto;
+    grid-area: 1 / 1;
   }
 
   .notebook-preview-empty {

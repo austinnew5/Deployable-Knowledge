@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { ApiError } from '$lib/utils';
 	import { DialogConfirmation } from '$lib/components/app/dialogs';
@@ -14,6 +14,12 @@
 	} from '$lib/constants';
 	import { notebooksStore } from '$lib/stores';
 	import type { NotebookPage, NotebookWithPages } from '$lib/types';
+	import {
+		lineAtPreviewScrollTop,
+		lineAtTextareaScrollTop,
+		scrollPreviewToLine,
+		scrollTextareaToLine
+	} from '$lib/utils/scrollLineSync';
 	import { createNotebookAutosave } from './notebook-autosave';
 	import { notebookCountLabel } from './notebook-format';
 	import type { NotebookDeleteTarget, NotebookRenameTarget, NotebookView } from './notebook-types';
@@ -47,6 +53,8 @@
 
 	let notes = $state('');
 	let previewMode = $state(false);
+	let editorTextareaRef = $state<HTMLTextAreaElement | null>(null);
+	let previewViewportRef = $state<HTMLDivElement | null>(null);
 	let view = $state<NotebookView>('editor');
 	let syncedPageId = $state<string | null>(null);
 	let lastSavedNotes = $state('');
@@ -115,6 +123,30 @@
 
 	function goBack(): void {
 		view = view === 'editor' ? 'pages' : 'notebooks';
+	}
+
+	// NotebookEditor and NotebookPreview are two separate components swapped in
+	// and out by the {#if previewMode} above - each mount is a fresh DOM node
+	// with scrollTop 0, so the scroll position has to be captured before the
+	// swap and re-applied after Svelte mounts the other one. Matched by
+	// fraction scrolled, not raw pixels - the rendered preview and the raw
+	// text have different lengths, so the same pixel offset would land in a
+	// different part of the document.
+	// Matched by source line, not by scroll fraction - rendered markdown
+	// (headings, code blocks, spacing) doesn't scale 1:1 with raw line count,
+	// so matching by height ratio alone drifts on real notes.
+	async function togglePreviewMode(): Promise<void> {
+		if (!previewMode) {
+			const line = editorTextareaRef ? lineAtTextareaScrollTop(editorTextareaRef, notes) : 0;
+			previewMode = true;
+			await tick();
+			if (previewViewportRef) scrollPreviewToLine(previewViewportRef, line);
+		} else {
+			const line = previewViewportRef ? lineAtPreviewScrollTop(previewViewportRef) : 0;
+			previewMode = false;
+			await tick();
+			if (editorTextareaRef) scrollTextareaToLine(editorTextareaRef, notes, line);
+		}
 	}
 
 	async function openNotebook(notebook: NotebookWithPages): Promise<void> {
@@ -280,7 +312,7 @@
 			sourcesLoading={notebooksStore.sourcesLoading}
 			onBack={goBack}
 			onCreate={openCreate}
-			onTogglePreview={() => (previewMode = !previewMode)}
+			onTogglePreview={() => void togglePreviewMode()}
 			onRemoveSource={removeSource}
 			onClearSources={clearSources}
 		/>
@@ -301,10 +333,11 @@
 				onDelete={openDeletePage}
 			/>
 		{:else if previewMode}
-			<NotebookPreview content={notes} />
+			<NotebookPreview content={notes} bind:viewportRef={previewViewportRef} />
 		{:else}
 			<NotebookEditor
 				bind:notes
+				bind:textareaRef={editorTextareaRef}
 				{pageLimit}
 				{characterCount}
 				characterLimit={NOTEBOOK_TEXT_CHARACTER_LIMIT}

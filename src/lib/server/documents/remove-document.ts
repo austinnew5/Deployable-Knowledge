@@ -1,5 +1,5 @@
 import { unlink } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { eq } from "drizzle-orm";
 import { db } from "$lib/server/database/database";
 import { documents, synced_files } from "$lib/server/database/schema";
@@ -22,14 +22,25 @@ function isManagedDocumentPath(filePath: string): boolean {
   return path !== root && containsPath(root, path);
 }
 
-export async function removeManagedDocumentFile(filePath: string): Promise<void> {
-  if (!isManagedDocumentPath(filePath)) return;
-
+async function unlinkIfExists(filePath: string): Promise<void> {
   try {
     await unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
+  }
+}
+
+export async function removeManagedDocumentFile(filePath: string): Promise<void> {
+  if (!isManagedDocumentPath(filePath)) return;
+
+  await unlinkIfExists(filePath);
+  // Non-PDF sources get a cached PDF preview generated alongside them on first view
+  // (see document-files/[id]/+server.ts) - clean that up too so it doesn't outlive
+  // the source. Harmless no-op via unlinkIfExists if one was never generated.
+  const ext = extname(filePath);
+  if (ext && ext.toLowerCase() !== ".pdf") {
+    await unlinkIfExists(filePath.slice(0, -ext.length) + ".preview.pdf");
   }
 }
 

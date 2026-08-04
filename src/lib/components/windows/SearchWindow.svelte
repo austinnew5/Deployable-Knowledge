@@ -1,10 +1,16 @@
 <script lang="ts">
-  import { getContext } from "svelte";
+  import { getContext, tick } from "svelte";
 
   import BaseWindow from "$lib/components/windows/BaseWindow.svelte";
   import Icon from "$lib/components/utils/Icon.svelte";
+  import NotebookDestinationDialog from "$lib/components/notebooks/NotebookDestinationDialog.svelte";
+  import { showToast } from "$lib/components/utils/ToastHost.svelte";
   import { selectedDocumentIds } from "$lib/utils/documentSelection";
+  import { attachChunkToNotebookDestination } from "$lib/utils/notebookState";
+  import { showWindow } from "$lib/utils/workspaceState";
+  import { isBrowserViewableSourceType } from "$lib/utils/documentReferences";
   import type { AppState } from "$lib/state.svelte";
+  import type { NotebookPageContentRequest } from "$lib/requestTypes";
   import type { UserSettings } from "$lib/server/database/schema";
   import { formatPositionLabel } from "$lib/utils/positionLabel";
   import type { WindowInstanceProps } from "./index";
@@ -50,8 +56,69 @@
   let error = $state("");
   const activeResults = $derived(results[retrievalMode] ?? []);
 
+  let chunkDestinationOpen = $state(false);
+  let pendingResult = $state<SearchMatch | null>(null);
+
   function pdfHref(result: SearchMatch) {
     return `/document-files/${encodeURIComponent(result.documentId)}#page=${result.pageIndex + 1}`;
+  }
+
+  function saveResultChunk(result: SearchMatch) {
+    pendingResult = result;
+    chunkDestinationOpen = true;
+  }
+
+  function closeChunkDestination() {
+    chunkDestinationOpen = false;
+    pendingResult = null;
+  }
+
+  async function saveResultChunkToDestination(destination: {
+    notebookId: string;
+    notebookTitle: string;
+    pageId: string;
+    pageTitle: string;
+  }) {
+    const result = pendingResult;
+    if (!result) throw new Error("Choose a result to save.");
+
+    const outcome = await attachChunkToNotebookDestination(
+      appState,
+      destination,
+      result.chunkId,
+    );
+
+    const page = appState.activePage;
+    if (page && page.id === destination.pageId) {
+      const separator = page.content.trim() ? "\n\n" : "";
+      const nextContent = `${page.content}${separator}${result.content}`;
+      const updateRes = await fetch(
+        `/notebooks/${destination.notebookId}/pages/${destination.pageId}/update`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: nextContent,
+          } satisfies NotebookPageContentRequest),
+        },
+      );
+      if (!updateRes.ok) {
+        throw new Error("The chunk was attached, but the text could not be added to the page.");
+      }
+      appState.notebooks = (await updateRes.json()).notebooks ?? appState.notebooks;
+    }
+
+    showWindow("notebook-window");
+    await tick();
+    window.dispatchEvent(new CustomEvent("dk:notebooks-updated"));
+    window.dispatchEvent(new CustomEvent("notebook-sources:refresh"));
+    const label = `${destination.notebookTitle} → ${destination.pageTitle}`;
+    showToast(
+      outcome.duplicate
+        ? `Text added and chunk already exists in Loaded Sources for ${label}`
+        : `Text and chunk added to ${label}`,
+    );
+    closeChunkDestination();
   }
 
   function handleRetrievalModeChange(mode: RetrievalMode) {
@@ -175,18 +242,26 @@
               {/if}
             </div>
             <p class="result-content">{result.content}</p>
-            {#if result.sourceType === "PDF"}
-              <div class="result-actions">
+            <div class="result-actions">
+              {#if isBrowserViewableSourceType(result.sourceType)}
                 <a
                   class="btn btn-sm"
                   href={pdfHref(result)}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Show in PDF
+                  Open in browser
                 </a>
-              </div>
-            {/if}
+              {/if}
+              <button
+                class="btn btn-sm"
+                type="button"
+                title="Send this result to a notebook"
+                onclick={() => saveResultChunk(result)}
+              >
+                Send to notebook
+              </button>
+            </div>
           </div>
         {/each}
       {:else}
@@ -195,6 +270,16 @@
     </div>
 
   </div>
+
+  <NotebookDestinationDialog
+    open={chunkDestinationOpen}
+    kindLabel="Save Chunk"
+    itemTitle={pendingResult?.sourceTitle ?? "Selected chunk"}
+    actionLabel="Save Chunk"
+    ariaLabel="Save search result destination"
+    onClose={closeChunkDestination}
+    onSave={saveResultChunkToDestination}
+  />
 
 </BaseWindow>
 

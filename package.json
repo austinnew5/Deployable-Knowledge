@@ -48,6 +48,7 @@
 		"dotenv": "^17.4.2",
 		"drizzle-orm": "^0.45.2",
 		"markdown-it": "^14.3.0",
+		"markdown-it-mark": "^4.0.0",
 		"material-symbols": "^0.44.12",
 		"mode-watcher": "^1.1.0",
 		"officeparser": "^7.4.0",

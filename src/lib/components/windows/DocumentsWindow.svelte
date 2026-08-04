@@ -14,6 +14,8 @@
   import DocumentProgressPopup from "$lib/components/popups/DocumentProgressPopup.svelte";
   import DocumentTagPickerPopup from "$lib/components/popups/DocumentTagPickerPopup.svelte";
   import { showToast } from "$lib/components/utils/ToastHost.svelte";
+  import { API_DOCUMENT_FILES } from "$lib/constants";
+  import { isBrowserViewableSourceType } from "$lib/utils/documentReferences";
   import {
     keepExistingDocumentSelections,
     selectedDocumentIds,
@@ -887,14 +889,27 @@
                       {document.chunkCount} chunks - updated {formatDate(document.updatedAt)}
                     </div>
                   </div>
-                  <button
-                    class="btn btn-icon"
-                    type="button"
-                    title="Remove document"
-                    aria-label={`Remove ${document.title}`}
-                    disabled={Boolean(working)}
-                    onclick={() => handleRemoveDocument(document)}
-                  ><Icon name="delete" size={16} /></button>
+                  <div class="docs-row-actions">
+                    {#if isBrowserViewableSourceType(document.sourceType)}
+                      <a
+                        class="btn btn-icon"
+                        href={API_DOCUMENT_FILES.byId(document.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open in browser"
+                        aria-label={`Open ${document.title} in browser`}
+                        onclick={(event) => event.stopPropagation()}
+                      ><Icon name="open_in_new" size={16} /></a>
+                    {/if}
+                    <button
+                      class="btn btn-icon"
+                      type="button"
+                      title="Remove document"
+                      aria-label={`Remove ${document.title}`}
+                      disabled={Boolean(working)}
+                      onclick={() => handleRemoveDocument(document)}
+                    ><Icon name="delete" size={16} /></button>
+                  </div>
                 </div>
               {/each}
             </div>
@@ -1106,6 +1121,12 @@
     min-width: 16px;
     height: 16px;
     margin: 0;
+  }
+
+  .docs-row-actions {
+    display: flex;
+    gap: 5px;
+    align-items: center;
   }
 
   .docs-icon {
