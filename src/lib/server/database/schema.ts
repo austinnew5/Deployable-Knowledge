@@ -365,6 +365,27 @@ export const synced_files = sqliteTable(
   ],
 );
 
+// One row per failed ingest attempt, keyed by the source file's path so a retry that
+// succeeds can clear it out. This is the only durable record of "what happened" when a
+// file fails to ingest/embed - everything else (SSE progress, console.error) is ephemeral.
+export const ingest_failures = sqliteTable(
+  "ingest_failures",
+  {
+    id: text("id").primaryKey(),
+    sourcePath: text("source_path").notNull(),
+    title: text("title").notNull(),
+    sourceType: text("source_type"),
+    stage: text("stage"),
+    message: text("message").notNull(),
+    stack: text("stack"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("ingest_failures_source_path_idx").on(table.sourcePath),
+    index("ingest_failures_created_idx").on(table.createdAt),
+  ],
+);
+
 // Compressed, versioned Knowledge Graph snapshots let a valid graph survive
 // application/server restarts without rebuilding entity and relationship data.
 export const knowledge_graph_snapshots = sqliteTable("knowledge_graph_snapshots", {
@@ -442,6 +463,9 @@ export type NewSyncedFolder = typeof synced_folders.$inferInsert;
 
 export type SyncedFile = typeof synced_files.$inferSelect;
 export type NewSyncedFile = typeof synced_files.$inferInsert;
+
+export type IngestFailure = typeof ingest_failures.$inferSelect;
+export type NewIngestFailure = typeof ingest_failures.$inferInsert;
 
 export type AssistantProfile = typeof profiles.$inferSelect;
 export type NewAssistantProfile = typeof profiles.$inferInsert;

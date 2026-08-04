@@ -6,6 +6,7 @@ import type { DocumentIngestProgress } from "$lib/requestTypes";
 import { db } from "$lib/server/database/database";
 import { documents, synced_files, synced_folders } from "$lib/server/database/schema";
 import { ingestDocument, isSupportedDocument } from "$lib/server/rag/ingest-document";
+import { clearIngestFailures, recordIngestFailure } from "./ingest-failures";
 import { removeDocument, removeManagedDocumentFile } from "./remove-document";
 
 export type SyncFolderResult = {
@@ -204,14 +205,21 @@ export async function syncFolder(
         await removeDocument(tracked.documentId, { syncedFileDisposition: "remove" });
       }
 
+      await clearIngestFailures(file.sourcePath);
+
       const status = tracked ? "updated" : "added";
       result[status] += 1;
       onProgress?.({ sourcePath: file.sourcePath, status });
     } catch (error) {
-      const message = String(error);
+      const message = error instanceof Error ? error.message : String(error);
       result.failed += 1;
       onProgress?.({ sourcePath: file.sourcePath, status: "failed", message });
       console.error(`[Folder Sync] ${file.sourcePath}: ${message}`);
+      await recordIngestFailure({
+        sourcePath: file.sourcePath,
+        title: basename(file.sourcePath, extname(file.sourcePath)),
+        error,
+      });
 
       if (!tracked && createdDocument) {
         try {

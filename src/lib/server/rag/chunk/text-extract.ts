@@ -7,6 +7,7 @@ import {
   type Source,
 } from "./parse-shared.ts";
 import { createOcrWorker } from "./ocr";
+import { cleanOcrText } from "./ocr-text-quality";
 
 export type TextExtractionResult = {
   chunks: Chunk[];

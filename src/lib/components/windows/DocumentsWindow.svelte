@@ -21,7 +21,7 @@
     selectedDocumentIds,
     toggleDocumentSelection,
   } from "$lib/utils/documentSelection";
-  import type { Document } from "$lib/server/database/schema";
+  import type { Document, IngestFailure } from "$lib/server/database/schema";
   import type { WindowInstanceProps } from "./index";
 
   type DocumentRow = Pick<Document, "id" | "title" | "updatedAt" | "sourceType"> & {
@@ -113,6 +113,9 @@
   let pickerItems = $state<DirectoryItem[]>([]);
   let pickerSelectedPaths = $state<string[]>([]);
   let selectedCount = $derived($selectedDocumentIds.length);
+  let failures = $state<IngestFailure[]>([]);
+  let failuresCollapsed = $state(false);
+  let expandedFailureId = $state<string | null>(null);
 
   onMount(() => {
     refreshAll().catch(() => showToast("Documents failed to load"));
@@ -271,14 +274,16 @@
   }
 
   async function refreshAll(message = "") {
-    const [documentData, folderData] = await Promise.all([
+    const [documentData, folderData, failureData] = await Promise.all([
       request<{ documents?: DocumentRow[]; tags?: string[] }>("/documents/list"),
       request<{ folders?: SyncedFolderRow[] }>("/documents/folders"),
+      request<{ failures?: IngestFailure[] }>("/documents/failures"),
     ]);
     documents = documentData.documents ?? [];
     availableTags = documentData.tags ?? [];
     tagFilters = tagFilters.filter((tag) => availableTags.includes(tag));
     folders = folderData.folders ?? [];
+    failures = failureData.failures ?? [];
     keepExistingDocumentSelections(new Set(documents.map((document) => document.id)));
     if (message) status = message;
   }
@@ -507,6 +512,29 @@
       showToast("Document removal failed");
     } finally {
       working = null;
+    }
+  }
+
+  function toggleFailureExpanded(id: string) {
+    expandedFailureId = expandedFailureId === id ? null : id;
+  }
+
+  async function dismissFailure(id: string) {
+    try {
+      await request(`/documents/failures/${id}`, { method: "DELETE" });
+      failures = failures.filter((failure) => failure.id !== id);
+    } catch {
+      showToast("Could not dismiss that failure");
+    }
+  }
+
+  async function clearAllFailures() {
+    if (!confirm(`Dismiss all ${failures.length} failed ingest${failures.length === 1 ? "" : "s"}?`)) return;
+    try {
+      await request("/documents/failures", { method: "DELETE" });
+      failures = [];
+    } catch {
+      showToast("Could not clear failures");
     }
   }
 
@@ -755,6 +783,63 @@
     </div>
 
     {#if status}<div class="docs-status li-subtle">{status}</div>{/if}
+
+    {#if failures.length > 0}
+      <section class="docs-failures">
+        <header class="docs-failures-header">
+          <button
+            class:expanded={!failuresCollapsed}
+            class="btn btn-icon docs-group-toggle"
+            type="button"
+            aria-label="Toggle failed ingests"
+            onclick={() => (failuresCollapsed = !failuresCollapsed)}
+          >
+            <Icon name="expand_more" size={16} />
+          </button>
+          <div class="docs-failures-title">
+            <Icon name="error" size={16} />
+            <span>{failures.length} failed to ingest</span>
+          </div>
+          <button class="btn btn-sm" type="button" onclick={clearAllFailures}>Clear all</button>
+        </header>
+
+        {#if !failuresCollapsed}
+          <div class="docs-failures-list">
+            {#each failures as failure (failure.id)}
+              <div class="docs-failure-row">
+                <button
+                  class="docs-failure-summary"
+                  type="button"
+                  onclick={() => toggleFailureExpanded(failure.id)}
+                  aria-expanded={expandedFailureId === failure.id}
+                >
+                  <div class="docs-failure-title" title={failure.sourcePath}>{failure.title}</div>
+                  <div class="li-meta docs-failure-message">{failure.message}</div>
+                  <div class="li-meta">{formatDate(failure.createdAt)}</div>
+                </button>
+                <button
+                  class="btn btn-icon"
+                  type="button"
+                  title="Dismiss"
+                  aria-label={`Dismiss failure for ${failure.title}`}
+                  onclick={() => dismissFailure(failure.id)}
+                ><Icon name="close" size={16} /></button>
+              </div>
+              {#if expandedFailureId === failure.id}
+                <div class="docs-failure-detail">
+                  <div><strong>File:</strong> {failure.sourcePath}</div>
+                  {#if failure.stage}<div><strong>Stage:</strong> {failure.stage}</div>{/if}
+                  <div><strong>Error:</strong> {failure.message}</div>
+                  {#if failure.stack}
+                    <pre class="docs-failure-stack">{failure.stack}</pre>
+                  {/if}
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
 
     <div class="docs-selection li-subtle">
       {selectedCount} selected. If none are selected, chat searches all stored documents.
@@ -1009,6 +1094,101 @@
 
   .docs-tag-filters { min-height: 26px; }
   .docs-bulk-bar { margin: 0; }
+
+  .docs-failures {
+    border: 1px solid color-mix(in oklab, var(--danger-bor, #c44) 45%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--danger-but, #c44) 12%, transparent);
+  }
+
+  .docs-failures-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+  }
+
+  .docs-failures-title {
+    display: flex;
+    overflow: hidden;
+    gap: 6px;
+    align-items: center;
+    color: var(--danger-bor, #c44);
+    font-size: 13px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .docs-failures-list {
+    display: grid;
+    gap: 3px;
+    padding: 0 8px 8px;
+  }
+
+  .docs-failure-row {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .docs-failure-summary {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .docs-failure-summary:hover,
+  .docs-failure-summary:focus-visible {
+    border-color: color-mix(in oklab, var(--danger-bor, #c44) 40%, var(--border));
+    outline: none;
+  }
+
+  .docs-failure-title {
+    overflow: hidden;
+    font-size: 13px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .docs-failure-message {
+    overflow: hidden;
+    color: var(--danger-bor, #c44);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .docs-failure-detail {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin: 0 0 3px;
+    background: hsl(var(--h) var(--sat) calc(var(--l-bg) + 2%));
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .docs-failure-stack {
+    max-height: 160px;
+    padding: 6px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: hsl(var(--h) var(--sat) calc(var(--l-bg) - 2%));
+    font-size: 11px;
+    white-space: pre-wrap;
+  }
 
   .docs-list {
     display: grid;

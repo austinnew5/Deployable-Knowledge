@@ -12,6 +12,7 @@ import type {
 import { db } from "$lib/server/database/database";
 import { document_chunks, documents, synced_files } from "$lib/server/database/schema";
 import { containsPath } from "$lib/server/documents/remove-document";
+import { clearIngestFailures, recordIngestFailure } from "$lib/server/documents/ingest-failures";
 import { ingestDocument } from "$lib/server/rag/ingest-document";
 import type { RequestHandler } from "./$types";
 
@@ -84,15 +85,16 @@ async function ingestBuffer(
 
   await writeFile(savedPath, buffer);
 
-  const result = await ingestDocument(
-    {
-      filePath: savedPath,
-      title: originalName.replace(/\.(pdf|docx|pptx|csv|xlsx|txt|md)$/i, "").trim() || originalName,
-    },
-    onProgress,
-  );
+  const title = originalName.replace(/\.(pdf|docx|pptx|csv|xlsx|txt|md)$/i, "").trim() || originalName;
 
-  return result;
+  try {
+    const result = await ingestDocument({ filePath: savedPath, title }, onProgress);
+    await clearIngestFailures(savedPath);
+    return result;
+  } catch (error) {
+    await recordIngestFailure({ sourcePath: savedPath, title, sourceType: kind.toUpperCase(), error });
+    throw error;
+  }
 }
 
 async function ingestUpload(

@@ -56,6 +56,17 @@ const SOURCE_TYPE_BY_EXTENSION: Partial<Record<string, Source["type"]>> = {
   ".md": "MD",
 };
 
+// Attached to whatever ingestDocument throws so callers (and the persisted failure log)
+// can say *where* in the pipeline it broke, not just that it broke.
+export type IngestStageError = Error & { stage: string };
+
+function stageError(stage: string, cause: unknown): IngestStageError {
+  const causeError = cause instanceof Error ? cause : new Error(String(cause));
+  const error = new Error(`${stage}: ${causeError.message}`, { cause: causeError }) as IngestStageError;
+  error.stage = stage;
+  return error;
+}
+
 // Shared ingest path for both terminal commands (testing) and UI routes
 export async function ingestDocument(
   { filePath, title }: IngestDocumentInput,
@@ -63,37 +74,39 @@ export async function ingestDocument(
 ): Promise<IngestDocumentResult> {
   if (!isSupportedDocument(filePath)) throw new Error("Unsupported document type.");
 
+  let stage = "Starting extraction";
   const report = (percent: number, message: string) => {
+    stage = message;
     onProgress?.({ percent, label: "Ingesting document", message });
   };
 
-  // DOCX gets converted to a real PDF up front (pandoc + tectonic) purely so the existing
-  // PDF extraction path can read it; it stays recorded as sourceType DOCX, not PDF. The
-  // original .docx is only removed once the whole ingest succeeds, so a failure leaves it for cleanup.
   const originalExt = extname(filePath).toLowerCase();
   let resolvedPath = filePath;
 
-  if (originalExt === ".docx") {
-    report(0, "Converting DOCX to PDF");
-    resolvedPath = filePath.replace(/\.docx$/i, ".pdf");
-    await convertDocxToPdf(filePath, resolvedPath);
-  }
-
-  const ext = extname(resolvedPath).toLowerCase();
-  const extract = EXTRACTORS[ext];
-  const sourceType = originalExt === ".docx" ? "DOCX" : SOURCE_TYPE_BY_EXTENSION[ext];
-  if (!extract || !sourceType) {
-    throw new Error("Unsupported document type.");
-  }
-
-  // Keep source info together so every downstream chunk can carry the same document identity
-  const source: Source = {
-    title: title?.trim() || basename(filePath),
-    type: sourceType,
-    path: resolvedPath,
-  };
-
   try {
+    // DOCX gets converted to a real PDF up front (pandoc + tectonic) purely so the existing
+    // PDF extraction path can read it; it stays recorded as sourceType DOCX, not PDF. The
+    // original .docx is only removed once the whole ingest succeeds, so a failure leaves it for cleanup.
+    if (originalExt === ".docx") {
+      report(0, "Converting DOCX to PDF");
+      resolvedPath = filePath.replace(/\.docx$/i, ".pdf");
+      await convertDocxToPdf(filePath, resolvedPath);
+    }
+
+    const ext = extname(resolvedPath).toLowerCase();
+    const extract = EXTRACTORS[ext];
+    const sourceType = originalExt === ".docx" ? "DOCX" : SOURCE_TYPE_BY_EXTENSION[ext];
+    if (!extract || !sourceType) {
+      throw new Error("Unsupported document type.");
+    }
+
+    // Keep source info together so every downstream chunk can carry the same document identity
+    const source: Source = {
+      title: title?.trim() || basename(filePath),
+      type: sourceType,
+      path: resolvedPath,
+    };
+
     // Updated linear ingest path: extract pages/tables, chunk text, assemble final chunks, then store
     report(0, "Starting extraction");
 
@@ -104,12 +117,16 @@ export async function ingestDocument(
     const rawChunks = chunkPages(extraction.chunks);
     const chunks = assembleChunks(rawChunks);
 
+    if (chunks.length === 0) {
+      throw new Error("No text could be extracted from this file - it may be empty, scanned, or corrupted.");
+    }
+
     report(50, `Embedding 0 of ${chunks.length} chunks`);
 
     const stored = await storeDocumentChunks(
       chunks,
-      ({ stage, current, total }) => {
-        if (stage !== "embedding") return;
+      ({ stage: storeStage, current, total }) => {
+        if (storeStage !== "embedding") return;
         const ratio = total > 0 ? current / total : 1;
         report(50 + ratio * 50, `Embedding ${current} of ${total} chunks`);
       },
@@ -136,6 +153,6 @@ export async function ingestDocument(
     if (resolvedPath !== filePath) {
       await rm(resolvedPath, { force: true });
     }
-    throw error;
+    throw stageError(stage, error);
   }
 }
