@@ -19,7 +19,6 @@ export type SearchMatchBase = {
   chunkId: string;
   documentId: string;
   sourcePath: string;
-  sourceType: Document["sourceType"];
   sourceTitle: string;
   sourceType: Document["sourceType"];
   pageIndex: number;

@@ -152,6 +152,8 @@
     appState.retrievalMode = profile.retrievalMode;
     appState.ragTopK = profile.ragTopK;
     appState.agentMaxTurns = profile.agentMaxTurns;
+    appState.reasoningBudget = profile.reasoningBudget;
+    appState.enabledTools = profile.enabledTools;
     appState.promptTemplateId = profile.promptTemplateId || "";
     appState.persona = profile.persona || "";
   }
@@ -166,6 +168,8 @@
       retrievalMode,
       ragTopK: appState.ragTopK,
       agentMaxTurns: appState.agentMaxTurns,
+      reasoningBudget: appState.reasoningBudget,
+      enabledTools: appState.enabledTools,
       promptTemplateId: appState.promptTemplateId || null,
       persona: appState.persona,
     };

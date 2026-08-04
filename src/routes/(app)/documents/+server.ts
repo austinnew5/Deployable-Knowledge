@@ -164,11 +164,22 @@ export const POST: RequestHandler = async ({ request }) => {
   }
 
   await mkdir(DOCUMENTS_DIR, { recursive: true });
+
+  // Guards against writing to (or closing) a controller the client has already
+  // disconnected from - without this, a mid-ingest disconnect throws
+  // "Invalid state: Controller is already closed".
+  let closed = false;
+
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
       const send = (event: DocumentIngestEvent) => {
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          closed = true;
+        }
       };
 
       const run = isUpload
@@ -183,7 +194,18 @@ export const POST: RequestHandler = async ({ request }) => {
             message: cause instanceof Error ? cause.message : "Document ingestion failed",
           });
         })
-        .finally(() => controller.close());
+        .finally(() => {
+          if (!closed) {
+            try {
+              controller.close();
+            } catch {
+              closed = true;
+            }
+          }
+        });
+    },
+    cancel() {
+      closed = true;
     },
   });
 

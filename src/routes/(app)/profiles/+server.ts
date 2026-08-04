@@ -10,6 +10,7 @@ import {
   type AssistantProfileCreateValues,
   type AssistantProfileListResponse,
 } from "$lib/server/database/schema";
+import { toolRegistry } from "$lib/server/tools";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async () => {
@@ -48,8 +49,11 @@ export const POST: RequestHandler = async ({ request }) => {
       maxTokens: body.maxTokens,
       temperature: body.temperature,
       topK: body.topK,
+      reasoningBudget: body.reasoningBudget,
       retrievalMode: body.retrievalMode,
       ragTopK: body.ragTopK,
+      agentMaxTurns: body.agentMaxTurns,
+      enabledTools: toolRegistry.filterIds(body.enabledTools),
       promptTemplateId: body.promptTemplateId,
       persona: body.persona,
       createdAt: timestamp,

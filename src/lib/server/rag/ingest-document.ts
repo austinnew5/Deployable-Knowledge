@@ -67,7 +67,6 @@ function stageError(stage: string, cause: unknown): IngestStageError {
   return error;
 }
 
-// Shared ingest path for both terminal commands (testing) and UI routes
 export async function ingestDocument(
   { filePath, title }: IngestDocumentInput,
   onProgress?: (progress: DocumentIngestProgress) => void,

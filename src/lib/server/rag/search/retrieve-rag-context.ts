@@ -13,14 +13,16 @@ import {
   type KnowledgeGraphPath,
 } from "$lib/server/knowledge-graph";
 import { formatPositionLabel } from "$lib/utils/positionLabel";
+import { DEFAULT_ASSISTANT_CONFIG } from "$lib/constants";
+import { RetrievalMode } from "$lib/enums";
 
 const DEFAULT_RAG_TOP_K = 5; // Now adjustable in Assistant Settings
 const MAX_CONTEXT_CHARS = 1200; // Same as max chunk size for now
 const MAX_PREVIEW_CHARS = 200;
+const ENV_RETRIEVAL_MODES: readonly RetrievalMode[] = [RetrievalMode.BM25, RetrievalMode.SEMANTIC];
 const DEFAULT_RETRIEVAL_MODE =
-  process.env.RAG_RETRIEVAL_MODE === "bm25" ? "bm25" :
-  process.env.RAG_RETRIEVAL_MODE === "semantic" ? "semantic" :
-  process.env.RAG_RETRIEVAL_MODE === "graph" ? "graph" : "hybrid";
+  ENV_RETRIEVAL_MODES.find((mode) => mode === process.env.RAG_RETRIEVAL_MODE) ??
+  DEFAULT_ASSISTANT_CONFIG.retrievalMode;
 
 export type RagRetrievalMode = "semantic" | "bm25" | "hybrid" | "graph";
 
@@ -84,7 +86,7 @@ function formatContext(matches: RagMatch[]) {
 }
 
 // Sources are the user-facing citation list, so keep them shorter than the model context
-function buildSources(matches: RagMatch[], mode: RagRetrievalMode): RagSource[] {
+export function buildSources(matches: RagMatch[], mode: RagRetrievalMode): RagSource[] {
   const hasExplicitScores = matches.some((match) => Number.isFinite(match.score));
   const rawScores = matches.map((match, index) =>
     Number.isFinite(match.score)
@@ -105,6 +107,7 @@ function buildSources(matches: RagMatch[], mode: RagRetrievalMode): RagSource[] 
       title: match.sourceTitle,
       description: positionLabel ? `${positionLabel}: ${preview}` : preview,
       documentId: match.documentId,
+      sourceType: match.sourceType,
       chunkId: match.chunkId,
       pageIndex: match.pageIndex,
       chunkIndex: match.chunkIndex,

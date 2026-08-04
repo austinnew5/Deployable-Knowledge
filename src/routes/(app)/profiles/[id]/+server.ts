@@ -8,6 +8,7 @@ import {
   users,
   type AssistantProfileUpdateValues,
 } from "$lib/server/database/schema";
+import { toolRegistry } from "$lib/server/tools";
 import type { RequestHandler } from "./$types";
 
 export const PATCH: RequestHandler = async ({ params, request }) => {
@@ -40,8 +41,11 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
       maxTokens: body.maxTokens,
       temperature: body.temperature,
       topK: body.topK,
+      reasoningBudget: body.reasoningBudget,
       retrievalMode: body.retrievalMode,
       ragTopK: body.ragTopK,
+      agentMaxTurns: body.agentMaxTurns,
+      enabledTools: toolRegistry.filterIds(body.enabledTools),
       promptTemplateId: body.promptTemplateId,
       persona: body.persona,
       updatedAt: new Date(),

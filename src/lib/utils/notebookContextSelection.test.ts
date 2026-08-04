@@ -27,6 +27,7 @@ function notebook(
     userId: "default",
     title,
     activePageId: pageIds[0] ?? null,
+    sortOrder: 0,
     createdAt: timestamp,
     updatedAt: timestamp,
     pages: pageIds.map((pageId, index) => ({
@@ -34,6 +35,7 @@ function notebook(
       notebookId: id,
       title: `Page ${index + 1}`,
       content: `Content ${pageId}`,
+      sortOrder: index,
       createdAt: timestamp,
       updatedAt: timestamp,
     })),

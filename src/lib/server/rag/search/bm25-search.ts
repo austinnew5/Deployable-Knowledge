@@ -71,7 +71,6 @@ async function loadCandidates({
       chunkId: document_chunks.id,
       documentId: document_chunks.documentId,
       sourcePath: documents.sourcePath,
-      sourceType: documents.sourceType,
       sourceTitle: documents.title,
       sourceType: documents.sourceType,
       pageIndex: document_chunks.pageIndex,

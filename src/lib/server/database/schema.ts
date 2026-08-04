@@ -8,6 +8,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { DEFAULT_ASSISTANT_CONFIG } from "$lib/constants";
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -97,11 +98,12 @@ export const notebooks = sqliteTable(
     userId: text("user_id").notNull().default("default"),
     title: text("title").notNull(),
     activePageId: text("active_page_id"),
+    sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [
-    index("notebooks_user_idx").on(table.userId),
+    index("notebooks_user_idx").on(table.userId, table.sortOrder),
     index("notebooks_updated_idx").on(table.updatedAt),
   ],
 );
@@ -115,11 +117,12 @@ export const notebook_pages = sqliteTable(
       .references(() => notebooks.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     content: text("content").notNull().default(""),
+    sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [
-    index("notebook_pages_notebook_idx").on(table.notebookId),
+    index("notebook_pages_notebook_idx").on(table.notebookId, table.sortOrder),
     index("notebook_pages_updated_idx").on(table.updatedAt),
   ],
 );
@@ -200,18 +203,31 @@ export const profiles = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     name: text("name", { length: 255 }).notNull(),
-    provider: text({ length: 128 }).notNull().default("ollama"),
-    model: text({ length: 128 }).notNull().default("granite4:350m"),
-    maxTokens: integer("max_tokens").notNull().default(512),
-    temperature: real().notNull().default(0.2),
-    topK: integer("top_k").notNull().default(8),
+    provider: text({ length: 128 }).notNull().default(DEFAULT_ASSISTANT_CONFIG.provider),
+    model: text({ length: 128 }).notNull().default(DEFAULT_ASSISTANT_CONFIG.model),
+    maxTokens: integer("max_tokens").notNull().default(DEFAULT_ASSISTANT_CONFIG.maxTokens),
+    temperature: real().notNull().default(DEFAULT_ASSISTANT_CONFIG.temperature),
+    topK: integer("top_k").notNull().default(DEFAULT_ASSISTANT_CONFIG.topK),
+    reasoningBudget: integer("reasoning_budget")
+      .notNull()
+      .default(DEFAULT_ASSISTANT_CONFIG.reasoningBudget),
+    // "graph" isn't part of cancun's RetrievalMode enum (DEFAULT_ASSISTANT_CONFIG.retrievalMode
+    // can never resolve to it), but it's a real chunker-production mode (see
+    // retrieve-rag-context.ts) - kept in the column's allowed values so profiles can still be
+    // saved with it, just never as the default.
     retrievalMode: text("retrieval_mode", {
       enum: ["semantic", "bm25", "hybrid", "graph"],
     })
       .notNull()
-      .default("hybrid"),
-    ragTopK: integer("rag_top_k").notNull().default(5),
-    agentMaxTurns: integer("agent_max_turns").notNull().default(4),
+      .default(DEFAULT_ASSISTANT_CONFIG.retrievalMode),
+    ragTopK: integer("rag_top_k").notNull().default(DEFAULT_ASSISTANT_CONFIG.ragTopK),
+    agentMaxTurns: integer("agent_max_turns")
+      .notNull()
+      .default(DEFAULT_ASSISTANT_CONFIG.agentMaxTurns),
+    enabledTools: text("enabled_tools", { mode: "json" })
+      .$type<string[]>()
+      .notNull()
+      .default(DEFAULT_ASSISTANT_CONFIG.enabledTools),
     promptTemplateId: text("prompt_template_id").references(
       () => promptTemplates.id,
       { onDelete: "set null" },
@@ -232,7 +248,12 @@ export const documents = sqliteTable(
     id: text("id").primaryKey(),
     title: text("title").notNull(),
     sourcePath: text("source_path").notNull(),
-    sourceType: text("source_type", { enum: ["PDF", "DOCX", "PPTX", "CSV", "XLSX", "TXT", "MD"] }).notNull(),
+    sourceType: text("source_type", {
+      // "NOTEBOOK" is a synthetic document - the Master Corpus feature (see
+      // master-corpus.ts) stores a notebook's content as a searchable pseudo-document,
+      // never backed by a real file on disk.
+      enum: ["PDF", "AUDIO", "DOCX", "PPTX", "CSV", "XLSX", "TXT", "MD", "NOTEBOOK"],
+    }).notNull(),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
@@ -278,6 +299,9 @@ export const document_chunks = sqliteTable(
     pageIndex: integer("page_index").notNull(),
     chunkIndex: integer("chunk_index").notNull(),
     content: text("content").notNull(),
+    // Only populated for AUDIO transcript chunks - the position within the audio file.
+    startMs: integer("start_ms"),
+    endMs: integer("end_ms"),
     embedding: blob("embedding", { mode: "buffer" }).notNull(),
     createdAt: text("created_at").notNull(),
   },
@@ -478,9 +502,11 @@ export type AssistantProfileValues = Pick<
   | "maxTokens"
   | "temperature"
   | "topK"
+  | "reasoningBudget"
   | "retrievalMode"
   | "ragTopK"
   | "agentMaxTurns"
+  | "enabledTools"
   | "promptTemplateId"
   | "persona"
 >;

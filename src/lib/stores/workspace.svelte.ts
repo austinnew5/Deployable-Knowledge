@@ -60,6 +60,7 @@ class WorkspaceStore {
 	}
 
 	showWindow(id: string): void {
+		this.leftPaneCollapsed = false;
 		this.mutatePlacements((items) =>
 			items.map((item) =>
 				item.id === id
@@ -178,6 +179,20 @@ class WorkspaceStore {
 		const preset = createPreset(createPresetId(), `Layout ${number}`, this.capture());
 		this.layoutPresets = [...this.layoutPresets, preset];
 		this.activeLayoutPresetId = preset.id;
+		this.persist();
+	}
+
+	moveLayoutPreset(movingId: string, targetIndex: number): void {
+		this.ensureInitialized();
+		const currentIndex = this.layoutPresets.findIndex(({ id }) => id === movingId);
+		if (currentIndex < 0) return;
+		const insertIndex = Math.max(0, Math.min(targetIndex, this.layoutPresets.length - 1));
+		if (insertIndex === currentIndex) return;
+
+		const presets = [...this.layoutPresets];
+		const [moving] = presets.splice(currentIndex, 1);
+		presets.splice(insertIndex, 0, moving);
+		this.layoutPresets = presets;
 		this.persist();
 	}
 

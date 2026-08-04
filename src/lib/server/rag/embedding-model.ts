@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import {
   env,
   ModelRegistry,
@@ -20,7 +21,6 @@ const EMBEDDING_CACHE_DIR = process.env.SEMANTIC_EMBED_CACHE_DIR ?? resolve(proc
 
 export type EmbeddingType = "search_document" | "search_query";
 
-// Keep model files inside the repo so setup works the same across machines
 env.cacheDir = EMBEDDING_CACHE_DIR;
 env.localModelPath = EMBEDDING_CACHE_DIR;
 env.allowRemoteModels = ALLOW_REMOTE_MODELS;
@@ -43,13 +43,25 @@ export function installEmbeddingModel(onProgress: ProgressCallback) {
   return getEmbeddingPipeline(onProgress);
 }
 
-// Load the transformer once and reuse it across ingest/search calls
 async function getEmbeddingPipeline(onProgress?: ProgressCallback) {
-  embeddingPipeline ??= pipeline("feature-extraction", EMBEDDING_MODEL, {
-    dtype: EMBEDDING_DTYPE,
-    cache_dir: EMBEDDING_CACHE_DIR,
-    progress_callback: onProgress,
-  });
+  if (!embeddingPipeline) {
+    const started = Date.now();
+    console.log(`[Embedding] Loading ${EMBEDDING_MODEL}...`);
+    embeddingPipeline = pipeline("feature-extraction", EMBEDDING_MODEL, {
+      dtype: EMBEDDING_DTYPE,
+      cache_dir: EMBEDDING_CACHE_DIR,
+      progress_callback: onProgress,
+    })
+      .then((loaded) => {
+        console.log(`[Embedding] Model ready in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+        return loaded;
+      })
+      .catch((error) => {
+        console.error("[Embedding] Model failed to load.", error);
+        embeddingPipeline = undefined;
+        throw error;
+      });
+  }
 
   return embeddingPipeline;
 }
@@ -84,11 +96,15 @@ export async function embedTexts(
 
     const output = await extractor(batch, { pooling: "mean", normalize: true });
     embeddings.push(...(output.tolist() as number[][]));
+    // The pipeline hands back a raw ONNX tensor - without disposing it, each batch
+    // leaks the underlying WASM memory instead of freeing it once we've read the values.
+    output.dispose();
 
     onProgress?.(
       Math.min(index + EMBEDDING_BATCH_SIZE, texts.length),
       texts.length,
     );
+    await yieldEventLoop();
   }
 
   return embeddings;
@@ -120,6 +136,7 @@ export async function embedTextsForStoredDimension(
     const batch = texts.slice(index, index + LEGACY_EMBEDDING_BATCH_SIZE);
     const output = await extractor(batch, { pooling: "mean", normalize: true });
     embeddings.push(...(output.tolist() as number[][]));
+    output.dispose();
   }
 
   return embeddings;

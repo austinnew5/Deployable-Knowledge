@@ -1,5 +1,5 @@
 import { access, readFile } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { error } from "@sveltejs/kit";
 import { eq } from "drizzle-orm";
 import { db } from "$lib/server/database/database";
@@ -15,6 +15,12 @@ import type { RequestHandler } from "./$types";
 // preview-only - RAG ingestion has its own format-specific extractors per type and is
 // unaffected by any of this.
 const CONVERTIBLE_EXTENSIONS = new Set([".docx", ".pptx", ".csv", ".xlsx", ".txt", ".md"]);
+
+// Bare document titles land straight in a Content-Disposition header - strip characters
+// that could break the header's syntax or smuggle in another one.
+function pdfFilename(title: string): string {
+  return `${title.replace(/[\r\n"]/g, "")}.pdf`;
+}
 
 export const GET: RequestHandler = async ({ params }) => {
   const document = await db
@@ -33,7 +39,7 @@ export const GET: RequestHandler = async ({ params }) => {
   if (ext === ".pdf") {
     try {
       const file = await readFile(filePath);
-      const filename = basename(document.sourcePath);
+      const filename = pdfFilename(document.title);
 
       return new Response(new Uint8Array(file), {
         headers: {
@@ -64,7 +70,7 @@ export const GET: RequestHandler = async ({ params }) => {
 
     try {
       const file = await readFile(previewPath);
-      const filename = `${basename(document.sourcePath, ext)}.pdf`;
+      const filename = pdfFilename(document.title);
 
       return new Response(new Uint8Array(file), {
         headers: {

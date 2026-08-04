@@ -44,6 +44,15 @@ DOCX ingestion requires [pandoc](https://pandoc.org) and [tectonic](https://tect
 
 PPTX/CSV/TXT don't go through PDF at all - they're parsed directly (PPTX/CSV via [officeparser](https://www.npmjs.com/package/officeparser), TXT natively) straight into the same chunker, since each already has a real, unambiguous position: slide number, row number, and line number respectively. Citations for these show "Slide N" / "Row N" / "Line N" instead of "Page N".
 
+### Audio transcription
+
+- Add audio files to the document library; the transcript is chunked, embedded, and searchable like any other document
+- Audio files up to 2 hours in length and 100 MB
+- Utilizes OpenAI's whisper-tiny model for transcription
+- Supports all FFMpeg supported audio files
+
+## Getting Started
+
 # Install dependencies
 npm install
 

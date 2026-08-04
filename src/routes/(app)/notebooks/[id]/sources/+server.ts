@@ -23,6 +23,7 @@ function preview(text: string, limit = PREVIEW_CHARS): string {
 // `preview` is computed and has no column of its own.
 export type NotebookSourceItem = Pick<NotebookSource, "id" | "chunkId" | "createdAt"> &
   Pick<DocumentChunk, "pageIndex" | "chunkIndex"> & {
+    documentId: Document["id"];
     documentTitle: Document["title"];
     sourceType: Document["sourceType"];
     preview: string;

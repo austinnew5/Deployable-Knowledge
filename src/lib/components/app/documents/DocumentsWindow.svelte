@@ -131,8 +131,8 @@
 					toast.error(error instanceof Error ? error.message : String(error));
 				}
 			}
-			status = `Added ${succeeded} PDF${succeeded === 1 ? '' : 's'}${failed ? `; ${failed} failed` : ''}.`;
-			if (succeeded) toast.success(`${succeeded} PDF${succeeded === 1 ? '' : 's'} ingested`);
+			status = `Added ${succeeded} file${succeeded === 1 ? '' : 's'}${failed ? `; ${failed} failed` : ''}.`;
+			if (succeeded) toast.success(`${succeeded} file${succeeded === 1 ? '' : 's'} ingested`);
 		} finally {
 			uploading = false;
 			pickerSelectedPaths = [];
@@ -345,7 +345,7 @@
 		</div>
 		<div class="border-t pt-3">
 			<Button class="w-full" disabled={busy} onclick={() => void openFilePicker()}>
-				<FolderPlus /> Add documents
+				<FolderPlus /> Add files
 			</Button>
 		</div>
 	</div>
@@ -370,7 +370,7 @@
 	tags={documentsStore.tags}
 	title={tagPickerMode === 'add' ? 'Tag to apply' : 'Tag to remove'}
 />
-<DialogProgress open={uploading} progress={documentsStore.progress} title="Ingesting PDF" />
+<DialogProgress open={uploading} progress={documentsStore.progress} title="Ingesting file" />
 <DialogDocumentSyncProgress
 	files={documentsStore.syncFiles}
 	open={documentsStore.syncing}

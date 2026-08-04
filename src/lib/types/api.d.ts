@@ -15,11 +15,22 @@ export interface AssistantConfig {
 	maxTokens: number;
 	temperature: number;
 	topK: number;
+	reasoningBudget: number;
 	retrievalMode: RetrievalMode;
 	ragTopK: number;
 	agentMaxTurns: number;
 	promptTemplateId: string | null;
 	persona: string;
+	enabledTools: string[];
+}
+
+export type ChatMode = 'document' | 'notebook';
+
+export interface ApiAgentTool {
+	id: string;
+	label: string;
+	description: string;
+	modes: readonly ChatMode[];
 }
 
 export interface ApiDocumentTagRequest {
@@ -69,8 +80,18 @@ export interface ApiDocumentListResponse {
 	tags: string[];
 }
 
+export type TranscriptChunkRow = Pick<
+	DocumentChunk,
+	'id' | 'chunkIndex' | 'content' | 'startMs' | 'endMs'
+>;
+
+export interface ApiTranscriptResponse {
+	chunks: TranscriptChunkRow[];
+	document: Pick<Document, 'id' | 'title' | 'sourceType' | 'updatedAt'>;
+}
+
 export interface ApiDocumentDirectoryItem {
-	kind: 'folder' | 'pdf';
+	kind: 'folder' | 'pdf' | 'audio' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'text';
 	name: string;
 	path: string;
 }
@@ -143,6 +164,18 @@ export interface ApiNotebookPageContentRequest {
 	content: string;
 }
 
+export interface ApiNotebookPageMoveRequest {
+	destinationNotebookId: string;
+}
+
+export interface ApiReorderRequest {
+	orderedIds: string[];
+}
+
+export interface ApiReorderResponse {
+	ok: true;
+}
+
 export interface ApiNotebookSourcesRequest {
 	chunk_ids: string[];
 }
@@ -154,6 +187,7 @@ export interface NotebookStateResponse {
 
 export type NotebookSourceItem = Pick<NotebookSource, 'id' | 'chunkId' | 'createdAt'> &
 	Pick<DocumentChunk, 'pageIndex'> & {
+		documentId: Document['id'];
 		documentTitle: Document['title'];
 		preview: string;
 	};
@@ -194,6 +228,26 @@ export type ApiEmbeddingModelInstallEvent =
 	| { status: 'ready' }
 	| { status: 'error'; message: string };
 
+export interface ApiLocalModelInfo {
+	fileName: string;
+	sizeBytes: number | null;
+	downloaded: boolean;
+}
+
+export interface ApiLocalModelsStatus {
+	models: ApiLocalModelInfo[];
+	downloadingFile: string | null;
+}
+
+export interface ApiLocalModelDownloadRequest {
+	fileName: string;
+}
+
+export type ApiLocalModelDownloadEvent =
+	| { status: 'progress'; progress: number; loaded: number; total: number }
+	| { status: 'ready'; fileName: string }
+	| { status: 'error'; message: string };
+
 interface ApiChatMessageBase {
 	message: string;
 	model_id: string;
@@ -201,8 +255,10 @@ interface ApiChatMessageBase {
 	max_tokens: number;
 	temperature: number;
 	top_k: number;
+	reasoning_budget?: number;
 	agent_max_turns: number;
 	tools_enabled?: boolean;
+	enabled_tools?: string[];
 }
 
 export interface ApiDocumentChatMessageRequest extends ApiChatMessageBase {
@@ -219,6 +275,14 @@ export interface ApiNotebookChatMessageRequest extends ApiChatMessageBase {
 	notebook_id: string | null;
 }
 
+export interface ApiNotebookCollectionImportRequest {
+	path: string;
+}
+
+export interface ApiNotebookMarkdownImportRequest {
+	path: string;
+}
+
 export type ApiChatMessageRequest = ApiDocumentChatMessageRequest | ApiNotebookChatMessageRequest;
 
 export type ApiChatStreamEvent =
@@ -232,6 +296,7 @@ export type ApiChatStreamEvent =
 			toolTurns: number;
 			toolCalls: number;
 			contextItems: number;
+			saved?: boolean;
 	  }
 	| { type: 'error'; message: string };
 
@@ -239,7 +304,9 @@ export interface ApiSearchMatch {
 	chunkId: string;
 	documentId: string;
 	sourceTitle: string;
+	sourceType: Document['sourceType'];
 	pageIndex: number;
+	chunkIndex: number;
 	content: string;
 }
 

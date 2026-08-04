@@ -5,6 +5,7 @@ import type { SQL } from "drizzle-orm";
 import { db } from "../../database/database";
 import { document_chunks, documents, type Document } from "../../database/schema";
 import { EMBEDDING_DIMENSION, embedTextsForStoredDimension } from "../embedding-model";
+import { isUsefulImageText } from "../chunk/ocr-text-quality";
 import {
   cleanFilterValues,
   type ScoredSearchMatch,
@@ -20,7 +21,6 @@ type CandidateRow = {
   chunkId: string;
   documentId: string;
   sourcePath: string;
-  sourceType: Document["sourceType"];
   sourceTitle: string;
   sourceType: Document["sourceType"];
   pageIndex: number;
@@ -49,7 +49,8 @@ export async function searchSemantic(
     };
   }
 
-  const filters: SQL[] = [];
+  // Deactivated documents never surface in retrieval, even when explicitly requested
+  const filters: SQL[] = [eq(documents.active, true)];
 
   if (documentIds.length > 0) {
     filters.push(inArray(document_chunks.documentId, documentIds));
@@ -69,7 +70,6 @@ export async function searchSemantic(
       chunkId: document_chunks.id,
       documentId: document_chunks.documentId,
       sourcePath: documents.sourcePath,
-      sourceType: documents.sourceType,
       sourceTitle: documents.title,
       sourceType: documents.sourceType,
       pageIndex: document_chunks.pageIndex,
@@ -165,7 +165,6 @@ export async function searchSemantic(
       chunkId: row.chunkId,
       documentId: row.documentId,
       sourcePath: row.sourcePath,
-      sourceType: row.sourceType,
       sourceTitle: row.sourceTitle,
       sourceType: row.sourceType,
       pageIndex: row.pageIndex,

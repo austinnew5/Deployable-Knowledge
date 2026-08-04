@@ -77,6 +77,7 @@
   // server-side and has no column of its own.
   type NotebookSourceItem = Pick<NotebookSource, "id" | "chunkId" | "createdAt"> &
     Pick<DocumentChunk, "pageIndex" | "chunkIndex"> & {
+      documentId: Document["id"];
       documentTitle: Document["title"];
       sourceType: Document["sourceType"];
       preview: string;

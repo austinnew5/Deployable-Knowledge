@@ -1,4 +1,5 @@
 import { redirect } from "@sveltejs/kit";
+import { dev } from "$app/environment";
 import type { RequestHandler } from "./$types";
 import { createSession } from "$lib/server/auth/utils";
 import {
@@ -18,7 +19,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 
   cookies.set("session_token", session.token!, {
     httpOnly: true,
-    secure: true,
+    // `vite dev` serves plain http, where Secure cookies are dropped.
+    secure: !dev,
     path: "/",
   });
 

@@ -40,5 +40,5 @@ export function buildNotebookCorpusChunks(
       ].join("\n"),
     }));
 
-  return assembleChunks(extractedPages, chunkPages(extractedPages));
+  return assembleChunks(chunkPages(extractedPages));
 }

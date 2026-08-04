@@ -13,21 +13,29 @@
 		NOTEBOOK_TEXT_WARNING_CHARACTER_COUNT
 	} from '$lib/constants';
 	import { notebooksStore } from '$lib/stores';
-	import type { NotebookPage, NotebookWithPages } from '$lib/types';
-	import {
-		lineAtPreviewScrollTop,
-		lineAtTextareaScrollTop,
-		scrollPreviewToLine,
-		scrollTextareaToLine
-	} from '$lib/utils/scrollLineSync';
+	import type {
+		ApiDocumentDirectoryResponse,
+		NotebookPage,
+		NotebookSourceItem,
+		NotebookWithPages
+	} from '$lib/types';
 	import { createNotebookAutosave } from './notebook-autosave';
 	import { notebookCountLabel } from './notebook-format';
-	import type { NotebookDeleteTarget, NotebookRenameTarget, NotebookView } from './notebook-types';
+	import type {
+		NotebookDeleteTarget,
+		NotebookRenameTarget,
+		NotebookView,
+		NotebookImportMode
+	} from './notebook-types';
 	import NotebookEditor from './NotebookEditor.svelte';
 	import NotebookHeader from './NotebookHeader.svelte';
 	import NotebookList from './NotebookList.svelte';
 	import NotebookPageList from './NotebookPageList.svelte';
 	import NotebookPreview from './NotebookPreview.svelte';
+	import NotebookImportDialog from './NotebookImportDialog.svelte';
+	import NotebookSearch from './NotebookSearch.svelte';
+	import type { NotebookSearchResult } from './notebook-search';
+	import { insertNotebookSourceCitation } from '$lib/utils/notebook-citations';
 
 	interface Props {
 		collapsed?: boolean;
@@ -62,6 +70,21 @@
 	let textDialogValue = $state('');
 	let renameTarget = $state<NotebookRenameTarget | null>(null);
 	let deleteTarget = $state<NotebookDeleteTarget | null>(null);
+	let movePageTarget = $state<NotebookPage | null>(null);
+	let moveDestinationId = $state('');
+	let notesTextarea = $state<HTMLTextAreaElement | null>(null);
+	let importDialogOpen = $state(false);
+	let importDirectory = $state<ApiDocumentDirectoryResponse | null>(null);
+	let importLoading = $state(false);
+	let importing = $state(false);
+	let importMode = $state<NotebookImportMode>('collection');
+	let importSelectedPaths = $state<string[]>([]);
+
+	function textDialogTitle(): string {
+		if (textDialogMode === 'create-notebook') return 'New notebook';
+		if (textDialogMode === 'create-page') return 'New page';
+		return `Rename ${renameTarget?.kind ?? 'item'}`;
+	}
 
 	const otherPageCharacters = $derived(
 		notebooksStore.activeNotebook?.pages.reduce(
@@ -125,30 +148,6 @@
 		view = view === 'editor' ? 'pages' : 'notebooks';
 	}
 
-	// NotebookEditor and NotebookPreview are two separate components swapped in
-	// and out by the {#if previewMode} above - each mount is a fresh DOM node
-	// with scrollTop 0, so the scroll position has to be captured before the
-	// swap and re-applied after Svelte mounts the other one. Matched by
-	// fraction scrolled, not raw pixels - the rendered preview and the raw
-	// text have different lengths, so the same pixel offset would land in a
-	// different part of the document.
-	// Matched by source line, not by scroll fraction - rendered markdown
-	// (headings, code blocks, spacing) doesn't scale 1:1 with raw line count,
-	// so matching by height ratio alone drifts on real notes.
-	async function togglePreviewMode(): Promise<void> {
-		if (!previewMode) {
-			const line = editorTextareaRef ? lineAtTextareaScrollTop(editorTextareaRef, notes) : 0;
-			previewMode = true;
-			await tick();
-			if (previewViewportRef) scrollPreviewToLine(previewViewportRef, line);
-		} else {
-			const line = previewViewportRef ? lineAtPreviewScrollTop(previewViewportRef) : 0;
-			previewMode = false;
-			await tick();
-			if (editorTextareaRef) scrollTextareaToLine(editorTextareaRef, notes, line);
-		}
-	}
-
 	async function openNotebook(notebook: NotebookWithPages): Promise<void> {
 		await autosave.flush();
 		try {
@@ -171,6 +170,25 @@
 			}
 			view = 'editor';
 			previewMode = false;
+		} catch (error) {
+			toast.error(message(error));
+		}
+	}
+
+	async function moveNotebook(notebookId: string, targetIndex: number): Promise<void> {
+		try {
+			await notebooksStore.moveNotebook(notebookId, targetIndex);
+		} catch (error) {
+			toast.error(message(error));
+		}
+	}
+
+	async function reorderPage(pageId: string, targetIndex: number): Promise<void> {
+		const notebook = notebooksStore.activeNotebook;
+		if (!notebook) return;
+
+		try {
+			await notebooksStore.reorderPage(notebook.id, pageId, targetIndex);
 		} catch (error) {
 			toast.error(message(error));
 		}
@@ -209,6 +227,39 @@
 			title: page.title,
 			detail: `Delete “${page.title}”? This cannot be undone.`
 		};
+	}
+
+	async function openSearchResult(result: NotebookSearchResult): Promise<void> {
+		await autosave.flush();
+		try {
+			if (result.notebookId !== notebooksStore.activeNotebookId) {
+				await notebooksStore.select(result.notebookId);
+			}
+			await notebooksStore.selectPage(result.notebookId, result.pageId);
+			view = 'editor';
+			previewMode = false;
+		} catch (error) {
+			toast.error(message(error));
+		}
+	}
+
+	function openMovePage(page: NotebookPage): void {
+		movePageTarget = page;
+		moveDestinationId =
+			notebooksStore.notebooks.find(({ id }) => id !== notebooksStore.activeNotebookId)?.id ?? '';
+	}
+
+	async function movePageToNotebook(): Promise<void> {
+		const notebook = notebooksStore.activeNotebook;
+		if (!notebook || !movePageTarget || !moveDestinationId) return;
+		await autosave.flush();
+		try {
+			await notebooksStore.movePage(notebook.id, movePageTarget.id, moveDestinationId);
+			movePageTarget = null;
+			toast.success('Page moved');
+		} catch (error) {
+			toast.error(message(error));
+		}
 	}
 
 	async function submitTextDialog(event: SubmitEvent): Promise<void> {
@@ -280,6 +331,108 @@
 		}
 	}
 
+	async function insertCitation(source: NotebookSourceItem): Promise<void> {
+		const start = notesTextarea?.selectionStart ?? notes.length;
+		const end = notesTextarea?.selectionEnd ?? start;
+		const insertion = insertNotebookSourceCitation(notes, source, start, end);
+		notes = insertion.text;
+		autosave.schedule();
+		await tick();
+		notesTextarea?.focus();
+		notesTextarea?.setSelectionRange(insertion.cursor, insertion.cursor);
+		toast.success(`Citation inserted: ${source.documentTitle}, p. ${source.pageIndex + 1}`);
+	}
+
+	async function prepareExport(): Promise<boolean> {
+		await autosave.flush();
+		if (notes === lastSavedNotes) return true;
+		toast.error('Save the current page before exporting.');
+		return false;
+	}
+
+	async function exportNotebook(notebook: NotebookWithPages): Promise<void> {
+		if (!(await prepareExport())) return;
+		try {
+			const filename = await notebooksStore.exportNotebook(notebook.id);
+			if (filename) toast.success(`Exported ${filename}`);
+		} catch (error) {
+			toast.error(message(error));
+		}
+	}
+
+	async function exportPage(page: NotebookPage): Promise<void> {
+		const notebook = notebooksStore.activeNotebook;
+		if (!notebook || !(await prepareExport())) return;
+		try {
+			const filename = await notebooksStore.exportPage(notebook.id, page.id);
+			if (filename) toast.success(`Exported ${filename}`);
+		} catch (error) {
+			toast.error(message(error));
+		}
+	}
+
+	async function openImportDialog(): Promise<void> {
+		importMode = view === 'notebooks' ? 'collection' : 'pages';
+
+		if (importMode === 'pages') {
+			if (!notebooksStore.activeNotebook) {
+				toast.error('Open a notebook before importing pages.');
+				return;
+			}
+
+			await autosave.flush();
+
+			if (notes !== lastSavedNotes) {
+				toast.error('Save the current page before importing.');
+				return;
+			}
+		}
+
+		importDialogOpen = true;
+		importSelectedPaths = [];
+		await navigateImportDirectory('');
+	}
+
+	async function navigateImportDirectory(path: string): Promise<void> {
+		importLoading = true;
+		importSelectedPaths = [];
+
+		try {
+			importDirectory = await notebooksStore.browseImportDirectory(path);
+		} catch (error) {
+			toast.error(message(error));
+		} finally {
+			importLoading = false;
+		}
+	}
+
+	async function importPaths(paths: string[]): Promise<void> {
+		if (!paths.length) return;
+
+		importing = true;
+
+		try {
+			if (importMode === 'collection') {
+				await notebooksStore.importCollection(paths[0]);
+				view = 'pages';
+				toast.success('Notebook collection imported');
+			} else {
+				for (const path of paths) {
+					await notebooksStore.importMarkdown(path);
+				}
+
+				toast.success(`${paths.length} notebook page${paths.length === 1 ? '' : 's'} imported`);
+			}
+
+			importDialogOpen = false;
+			importSelectedPaths = [];
+		} catch (error) {
+			toast.error(message(error));
+		} finally {
+			importing = false;
+		}
+	}
+
 	function headerTitle(): string {
 		if (notebooksStore.loading) return 'Loading notebook…';
 		if (view === 'notebooks') return 'Notebooks';
@@ -305,39 +458,67 @@
 >
 	<div class="grid h-full min-h-0 grid-rows-[auto_1fr] overflow-hidden">
 		<NotebookHeader
-			{view}
-			title={headerTitle()}
+			{importing}
+			onBack={goBack}
+			onClearSources={clearSources}
+			onCreate={openCreate}
+			onImport={openImportDialog}
+			onInsertCitation={insertCitation}
+			onRemoveSource={removeSource}
+			onTogglePreview={() => (previewMode = !previewMode)}
 			{previewMode}
 			sources={notebooksStore.sources}
 			sourcesLoading={notebooksStore.sourcesLoading}
-			onBack={goBack}
-			onCreate={openCreate}
-			onTogglePreview={() => void togglePreviewMode()}
-			onRemoveSource={removeSource}
-			onClearSources={clearSources}
+			title={headerTitle()}
+			{view}
 		/>
 		{#if view === 'notebooks'}
-			<NotebookList
+			<NotebookSearch
 				notebooks={notebooksStore.notebooks}
-				activeId={notebooksStore.activeNotebookId}
-				onOpen={(notebook) => void openNotebook(notebook)}
-				onRename={(notebook) => openRename(notebook, 'notebook')}
-				onDelete={openDeleteNotebook}
-			/>
+				onOpenResult={openSearchResult}
+				placeholder="Search notebooks..."
+			>
+				<NotebookList
+					activeId={notebooksStore.activeNotebookId}
+					exportDisabled={notebooksStore.exportingNotebookId !== null ||
+						notebooksStore.exportingPageId !== null}
+					exportingId={notebooksStore.exportingNotebookId}
+					notebooks={notebooksStore.notebooks}
+					onDelete={openDeleteNotebook}
+					onExport={(notebook) => void exportNotebook(notebook)}
+					onMove={moveNotebook}
+					onOpen={(notebook) => void openNotebook(notebook)}
+					onRename={(notebook) => openRename(notebook, 'notebook')}
+					reorderDisabled={notebooksStore.reordering}
+				/>
+			</NotebookSearch>
 		{:else if view === 'pages'}
-			<NotebookPageList
-				pages={notebooksStore.activeNotebook?.pages ?? []}
-				activeId={notebooksStore.activePage?.id ?? null}
-				onOpen={(page) => void openPage(page)}
-				onRename={(page) => openRename(page, 'page')}
-				onDelete={openDeletePage}
-			/>
+			<NotebookSearch
+				notebooks={notebooksStore.activeNotebook ? [notebooksStore.activeNotebook] : []}
+				onOpenResult={openSearchResult}
+				placeholder="Search pages..."
+			>
+				<NotebookPageList
+					activeId={notebooksStore.activePage?.id ?? null}
+					exportDisabled={notebooksStore.exportingNotebookId !== null ||
+						notebooksStore.exportingPageId !== null}
+					exportingId={notebooksStore.exportingPageId}
+					onDelete={openDeletePage}
+					onExport={(page) => void exportPage(page)}
+					onMove={openMovePage}
+					onOpen={(page) => void openPage(page)}
+					onRename={(page) => openRename(page, 'page')}
+					onReorder={reorderPage}
+					pages={notebooksStore.activeNotebook?.pages ?? []}
+					reorderDisabled={notebooksStore.reordering}
+				/>
+			</NotebookSearch>
 		{:else if previewMode}
 			<NotebookPreview content={notes} bind:viewportRef={previewViewportRef} />
 		{:else}
 			<NotebookEditor
+				bind:ref={notesTextarea}
 				bind:notes
-				bind:textareaRef={editorTextareaRef}
 				{pageLimit}
 				{characterCount}
 				characterLimit={NOTEBOOK_TEXT_CHARACTER_LIMIT}
@@ -350,6 +531,20 @@
 	</div>
 </WorkspaceWindow>
 
+<NotebookImportDialog
+	directory={importDirectory}
+	disabled={importing}
+	loading={importLoading}
+	mode={importMode}
+	onImportFolder={(path) => void importPaths([path])}
+	onNavigate={(path) => void navigateImportDirectory(path)}
+	onOpenChange={(open) => (importDialogOpen = open)}
+	onSelectedPathsChange={(paths) => (importSelectedPaths = paths)}
+	onSubmitPaths={(paths) => void importPaths(paths)}
+	open={importDialogOpen}
+	selectedPaths={importSelectedPaths}
+/>
+
 <Dialog.Root
 	open={Boolean(textDialogMode)}
 	onOpenChange={(open) => !open && (textDialogMode = null)}
@@ -357,13 +552,7 @@
 	<Dialog.Content>
 		<form class="grid gap-4" onsubmit={submitTextDialog}>
 			<Dialog.Header>
-				<Dialog.Title
-					>{textDialogMode === 'create-notebook'
-						? 'New notebook'
-						: textDialogMode === 'create-page'
-							? 'New page'
-							: `Rename ${renameTarget?.kind ?? 'item'}`}</Dialog.Title
-				>
+				<Dialog.Title>{textDialogTitle()}</Dialog.Title>
 				<Dialog.Description>Choose a clear, descriptive title.</Dialog.Description>
 			</Dialog.Header>
 			<div class="grid gap-2">
@@ -379,6 +568,29 @@
 				></Dialog.Footer
 			>
 		</form>
+	</Dialog.Content>
+</Dialog.Root>
+
+<Dialog.Root
+	open={Boolean(movePageTarget)}
+	onOpenChange={(open) => !open && (movePageTarget = null)}
+>
+	<Dialog.Content>
+		<Dialog.Header>
+			<Dialog.Title>Move {movePageTarget?.title ?? 'page'}</Dialog.Title>
+			<Dialog.Description>Choose another notebook for this page and its notes.</Dialog.Description>
+		</Dialog.Header>
+		<select class="dk-field h-9 px-3 text-sm" bind:value={moveDestinationId}>
+			{#each notebooksStore.notebooks.filter(({ id }) => id !== notebooksStore.activeNotebookId) as notebook (notebook.id)}
+				<option value={notebook.id}>{notebook.title}</option>
+			{/each}
+		</select>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={() => (movePageTarget = null)}>Cancel</Button>
+			<Button disabled={!moveDestinationId} onclick={() => void movePageToNotebook()}
+				>Move page</Button
+			>
+		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
 

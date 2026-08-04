@@ -1,3 +1,14 @@
+/* cancun's shadcn/Tailwind component tree (src/lib/components/app/*) needs the Tailwind
+   engine running to render at all - this only makes @apply/utility classes work for that
+   tree, it doesn't touch chunker-production's own HSL theme below. */
+@import 'tailwindcss';
+@source '.';
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
 /* Base app theme. */
 * {
 	box-sizing: border-box;
@@ -701,6 +712,21 @@ textarea:disabled {
 	.li-actions {
 		justify-content: flex-start;
 	}
+}
+
+/* cancun's shadcn/Tailwind-based component tree (src/lib/components/app/*)
+   ships its own global body/scrollbar styling here, but it depends on
+   cancun's oklch --background/--card/--muted-foreground variables, which
+   aren't defined in this file's :root (that's the HSL theme above) - they
+   only exist in cancun's own :root block, which this merge doesn't bring in.
+   Applying that styling now would silently reference undefined variables and
+   override the real background/text rules already set above (html,body at
+   line 108, body at line 120), breaking chunker-production's current theme.
+   Left out until the two theme systems are actually reconciled; only the
+   variable-independent cursor rule is safe to bring in as-is. */
+button,
+[role='button'] {
+	cursor: pointer;
 }
 
 .icon-btn {

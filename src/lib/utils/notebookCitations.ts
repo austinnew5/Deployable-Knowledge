@@ -1,10 +1,11 @@
 import { documentPdfPageUrl, isBrowserViewableSourceType } from "$lib/utils/documentReferences";
+import type { Document } from "$lib/server/database/schema";
 
 export type NotebookCitationSource = {
   documentId: string;
   documentTitle: string;
   pageIndex: number;
-  sourceType: "PDF" | "NOTEBOOK";
+  sourceType: Document["sourceType"];
 };
 
 export type CitationInsertion = {

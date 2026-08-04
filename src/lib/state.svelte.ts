@@ -26,5 +26,7 @@ export class AppState {
   retrievalMode = $state<"semantic" | "bm25" | "hybrid" | "graph">("hybrid");
   ragTopK = $state(5);
   agentMaxTurns = $state(4);
+  reasoningBudget = $state(512);
+  enabledTools = $state<string[]>([]);
   lastQuery = $state("");
 }

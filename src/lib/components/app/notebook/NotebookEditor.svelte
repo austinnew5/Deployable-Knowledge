@@ -10,7 +10,7 @@
 		notes: string;
 		onInput: () => void;
 		pageLimit: number;
-		textareaRef?: HTMLTextAreaElement | null;
+		ref?: HTMLTextAreaElement | null;
 	}
 
 	let {
@@ -22,15 +22,21 @@
 		notes = $bindable(),
 		onInput,
 		pageLimit,
-		textareaRef = $bindable(null)
+		ref = $bindable(null)
 	}: Props = $props();
+
+	function limitSuffix(): string {
+		if (atLimit) return ' · limit reached';
+		if (nearLimit) return ` · ${charactersRemaining.toLocaleString()} remaining`;
+		return '';
+	}
 </script>
 
 <div class="relative min-h-0">
 	<Textarea
 		class="h-full min-h-0 resize-none rounded-none border-0 bg-transparent px-4 py-3 pb-8 shadow-none focus-visible:border-transparent focus-visible:ring-0"
-		bind:ref={textareaRef}
 		bind:value={notes}
+		bind:ref
 		maxlength={pageLimit}
 		oninput={onInput}
 		placeholder="Write notes here…"
@@ -45,10 +51,6 @@
 		role="status"
 		aria-live="polite"
 	>
-		{characterCount.toLocaleString()} / {characterLimit.toLocaleString()} characters{atLimit
-			? ' · limit reached'
-			: nearLimit
-				? ` · ${charactersRemaining.toLocaleString()} remaining`
-				: ''}
+		{characterCount.toLocaleString()} / {characterLimit.toLocaleString()} characters{limitSuffix()}
 	</div>
 </div>
