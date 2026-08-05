@@ -94,7 +94,7 @@ export const searchTool: AgentTool<SearchToolData> = {
 		if (mode === 'all') {
 			const data = await searchAllMethods({ query, topK, documentIds });
 
-			const sources = buildSources(data.hybrid);
+			const sources = buildSources(data.hybrid, 'hybrid');
 			return createToolResult(data, {
 				outputs: sources.map(sourceOutput)
 			});

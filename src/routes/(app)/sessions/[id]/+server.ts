@@ -1,32 +1,48 @@
-import { json } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
-import type { ApiSessionTitleRequest } from '$lib/types';
-import { db } from '$lib/server/database/database';
-import { sessions } from '$lib/server/database/schema';
-import { SessionsRepository } from '$lib/server/repositories';
-import type { RequestHandler } from './$types';
+import { json } from "@sveltejs/kit";
+import { asc, eq } from "drizzle-orm";
+import type { SessionTitleRequest } from "$lib/requestTypes";
+import { db } from "$lib/server/database/database";
+import { session_messages, sessions } from "$lib/server/database/schema";
+import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ params }) => {
-	const session = await SessionsRepository.find(params.id);
+  const [session] = await db
+    .select()
+    .from(sessions)
+    .where(eq(sessions.id, params.id))
+    .limit(1);
 
-	if (!session) return json(null);
+  if (!session) return json(null);
 
-	return json(await SessionsRepository.listMessages(params.id));
+  const messages = await db
+    .select()
+    .from(session_messages)
+    .where(eq(session_messages.sessionId, params.id))
+    .orderBy(asc(session_messages.id));
+
+  return json(messages);
 };
 
 export const PATCH: RequestHandler = async ({ params, request }) => {
-	const body = (await request.json()) as ApiSessionTitleRequest;
-	const title = body.title.trim();
-	if (!title) {
-		return json({ error: 'Session title is required' }, { status: 400 });
-	}
-	await db.update(sessions).set({ title, updatedAt: new Date() }).where(eq(sessions.id, params.id));
+  const body = (await request.json()) as SessionTitleRequest;
+  const title = body.title.trim();
+  if (!title) {
+    return json({ error: "Session title is required" }, { status: 400 });
+  }
+  await db
+    .update(sessions)
+    .set({ title, updatedAt: new Date() })
+    .where(eq(sessions.id, params.id));
 
-	return json({ status: 'ok', session_id: params.id, title });
+  return json({ status: "ok", session_id: params.id, title });
 };
 
 export const DELETE: RequestHandler = async ({ params }) => {
-	await SessionsRepository.delete(params.id);
+  await db
+    .delete(session_messages)
+    .where(eq(session_messages.sessionId, params.id));
 
-	return json({ status: 'ok', session_id: params.id });
+  await db.delete(sessions).where(eq(sessions.id, params.id));
+
+  return json({ status: "ok", session_id: params.id });
 };

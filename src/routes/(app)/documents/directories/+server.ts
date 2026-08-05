@@ -1,61 +1,62 @@
-import { constants } from 'node:fs';
-import { access, readdir, realpath, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { extname, join, resolve } from 'node:path';
-import { error, json } from '@sveltejs/kit';
-import type { ApiDocumentDirectoryItem, ApiDocumentDirectoryResponse } from '$lib/types';
-import { containsPath } from '$lib/server/documents/remove-document';
-import { handlerForPath } from '$lib/server/documents/source-types';
-import type { RequestHandler } from './$types';
+import { constants } from "node:fs";
+import { access, readdir, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { extname, join, resolve } from "node:path";
+import { error, json } from "@sveltejs/kit";
+import { containsPath } from "$lib/server/documents/remove-document";
+import type { RequestHandler } from "./$types";
+
+type DirectoryItem = {
+  name: string;
+  path: string;
+  kind: "folder" | "pdf" | "docx" | "pptx" | "csv" | "xlsx" | "txt" | "md";
+};
+
+const BROWSABLE_EXTENSIONS = new Set([".pdf", ".docx", ".pptx", ".csv", ".xlsx", ".txt", ".md"]);
 
 export const GET: RequestHandler = async ({ url }) => {
-	const root = await realpath(homedir());
-	const requested = url.searchParams.get('path')?.trim() || root;
-	const purpose = url.searchParams.get('purpose') ?? 'documents';
+  const root = await realpath(homedir());
+  const requested = url.searchParams.get("path")?.trim() || root;
 
-	if (purpose !== 'documents' && purpose !== 'notebook') {
-		throw error(400, 'Unsupported directory browsing purpose.');
-	}
+  let directory: string;
+  try {
+    directory = await realpath(resolve(requested));
+    const directoryStats = await stat(directory);
+    if (!directoryStats.isDirectory()) throw new Error("Not a directory.");
+    await access(directory, constants.R_OK);
+  } catch {
+    throw error(400, "Directory does not exist or cannot be read.");
+  }
 
-	let directory: string;
-	try {
-		directory = await realpath(resolve(requested));
-		const directoryStats = await stat(directory);
-		if (!directoryStats.isDirectory()) throw new Error('Not a directory.');
-		await access(directory, constants.R_OK);
-	} catch {
-		throw error(400, 'Directory does not exist or cannot be read.');
-	}
+  if (!containsPath(root, directory)) {
+    throw error(403, "Directory is outside your home folder.");
+  }
 
-	if (!containsPath(root, directory)) throw error(403, 'Directory is outside your home folder.');
+  const entries = await readdir(directory, { withFileTypes: true });
+  const items: DirectoryItem[] = [];
 
-	const items: ApiDocumentDirectoryItem[] = [];
-	for (const entry of await readdir(directory, { withFileTypes: true })) {
-		if (entry.name.startsWith('.')) continue;
-		const path = join(directory, entry.name);
-		if (entry.isDirectory()) items.push({ name: entry.name, path, kind: 'folder' });
-		if (entry.isFile()) {
-			const extension = extname(entry.name).toLowerCase();
-			if (purpose === 'notebook') {
-				if (extension === '.md' || extension === '.txt') {
-					items.push({ kind: 'text', name: entry.name, path });
-				}
-			} else {
-				const handler = handlerForPath(entry.name);
-				if (handler) items.push({ kind: handler.kind, name: entry.name, path });
-			}
-		}
-	}
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
 
-	items.sort((left, right) => {
-		if (left.kind === 'folder' && right.kind !== 'folder') return -1;
-		if (right.kind === 'folder' && left.kind !== 'folder') return 1;
-		return left.name.localeCompare(right.name);
-	});
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) items.push({ name: entry.name, path, kind: "folder" });
+    if (entry.isFile()) {
+      const ext = extname(entry.name).toLowerCase();
+      if (BROWSABLE_EXTENSIONS.has(ext)) {
+        items.push({ name: entry.name, path, kind: ext.slice(1) as DirectoryItem["kind"] });
+      }
+    }
+  }
 
-	return json({
-		path: directory,
-		parentPath: directory === root ? null : resolve(directory, '..'),
-		items
-	} satisfies ApiDocumentDirectoryResponse);
+  items.sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === "folder" ? -1 : 1;
+    return left.name.localeCompare(right.name);
+  });
+  const parentPath = directory === root ? null : resolve(directory, "..");
+
+  return json({
+    path: directory,
+    parentPath,
+    items,
+  });
 };

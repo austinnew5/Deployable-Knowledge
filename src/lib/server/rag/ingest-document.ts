@@ -1,86 +1,157 @@
-import { basename } from 'node:path';
-import type { ApiDocumentIngestProgress, Document } from '$lib/types';
-import { handlerForPath, handlerForType } from '$lib/server/documents/source-types';
-import { chunkPages } from '$lib/server/rag/chunk/chunker';
-import { assembleChunks } from '$lib/server/rag/chunk/assemble-chunks';
-import type { Source } from '$lib/server/rag/chunk/parse-shared';
-import { storeDocumentChunks } from './embedding';
+import { rm } from "node:fs/promises";
+import { basename, extname } from "node:path";
+import type { DocumentIngestProgress } from "$lib/requestTypes";
+import { TextExtract } from "$lib/server/rag/chunk/text-extract";
+import { convertDocxToPdf } from "$lib/server/rag/chunk/altFileChunking/docx-to-pdf";
+import { PptxExtract } from "$lib/server/rag/chunk/altFileChunking/pptx-extract";
+import { CsvExtract } from "$lib/server/rag/chunk/altFileChunking/csv-extract";
+import { XlsxExtract } from "$lib/server/rag/chunk/altFileChunking/xlsx-extract";
+import { TxtExtract } from "$lib/server/rag/chunk/altFileChunking/txt-extract";
+import { MdExtract } from "$lib/server/rag/chunk/altFileChunking/md-extract";
+import { chunkPages } from "$lib/server/rag/chunk/chunker";
+import { assembleChunks } from "$lib/server/rag/chunk/assemble-chunks";
+import type { Source } from "$lib/server/rag/chunk/parse-shared";
+import type { TextExtractionResult } from "$lib/server/rag/chunk/text-extract";
+import { invalidateKnowledgeGraphCache } from "$lib/server/knowledge-graph/graph-index";
+import { rebuildDocumentTriplets } from "$lib/server/knowledge-graph/triplet-store";
+
+import { storeDocumentChunks } from "./embedding";
 
 export type IngestDocumentInput = {
-	filePath: string;
-	title?: string;
-	sourceType?: Document['sourceType'];
+  filePath: string;
+  title?: string;
 };
 
 export type IngestDocumentResult = {
-	documentId: string;
-	title: string;
-	sourcePath: string;
-	pageCount: number;
-	chunkCount: number;
+  documentId: string;
+  title: string;
+  sourcePath: string;
+  pageCount: number;
+  chunkCount: number;
 };
 
-function elapsed(started: number): string {
-	return `${((Date.now() - started) / 1000).toFixed(1)}s`;
+const SUPPORTED_EXTENSIONS = new Set([".pdf", ".docx", ".pptx", ".csv", ".xlsx", ".txt", ".md"]);
+
+export function isSupportedDocument(filePath: string): boolean {
+  return SUPPORTED_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+const EXTRACTORS: Partial<
+  Record<string, (source: Source, onPageProgress?: (current: number, total: number) => void) => Promise<TextExtractionResult>>
+> = {
+  ".pdf": TextExtract,
+  ".pptx": PptxExtract,
+  ".csv": CsvExtract,
+  ".xlsx": XlsxExtract,
+  ".txt": TxtExtract,
+  ".md": MdExtract,
+};
+
+const SOURCE_TYPE_BY_EXTENSION: Partial<Record<string, Source["type"]>> = {
+  ".pdf": "PDF",
+  ".pptx": "PPTX",
+  ".csv": "CSV",
+  ".xlsx": "XLSX",
+  ".txt": "TXT",
+  ".md": "MD",
+};
+
+// Attached to whatever ingestDocument throws so callers (and the persisted failure log)
+// can say *where* in the pipeline it broke, not just that it broke.
+export type IngestStageError = Error & { stage: string };
+
+function stageError(stage: string, cause: unknown): IngestStageError {
+  const causeError = cause instanceof Error ? cause : new Error(String(cause));
+  const error = new Error(`${stage}: ${causeError.message}`, { cause: causeError }) as IngestStageError;
+  error.stage = stage;
+  return error;
 }
 
 export async function ingestDocument(
-	{ filePath, title, sourceType }: IngestDocumentInput,
-	onProgress?: (progress: ApiDocumentIngestProgress) => void
+  { filePath, title }: IngestDocumentInput,
+  onProgress?: (progress: DocumentIngestProgress) => void,
 ): Promise<IngestDocumentResult> {
-	const handler = handlerForPath(filePath);
-	if (!handler?.extract) throw new Error('Unsupported document type.');
-	const extract = handler.extract;
-	const identity = handlerForType(sourceType ?? handler.type) ?? handler;
+  if (!isSupportedDocument(filePath)) throw new Error("Unsupported document type.");
 
-	const report = (percent: number, message: string) => {
-		onProgress?.({ percent, label: identity.progressLabel, message });
-	};
+  let stage = "Starting extraction";
+  const report = (percent: number, message: string) => {
+    stage = message;
+    onProgress?.({ percent, label: "Ingesting document", message });
+  };
 
-	const source: Source = {
-		title: title?.trim() || basename(filePath),
-		type: sourceType ?? handler.type,
-		path: filePath
-	};
+  const originalExt = extname(filePath).toLowerCase();
+  let resolvedPath = filePath;
 
-	report(0, handler.startMessage);
+  try {
+    // DOCX gets converted to a real PDF up front (pandoc + tectonic) purely so the existing
+    // PDF extraction path can read it; it stays recorded as sourceType DOCX, not PDF. The
+    // original .docx is only removed once the whole ingest succeeds, so a failure leaves it for cleanup.
+    if (originalExt === ".docx") {
+      report(0, "Converting DOCX to PDF");
+      resolvedPath = filePath.replace(/\.docx$/i, ".pdf");
+      await convertDocxToPdf(filePath, resolvedPath);
+    }
 
-	const started = Date.now();
-	console.log(`[Ingest] ${source.title}: extracting (${source.type})...`);
-	const extraction = await extract(source, (ratio, message) => report(ratio * 50, message));
+    const ext = extname(resolvedPath).toLowerCase();
+    const extract = EXTRACTORS[ext];
+    const sourceType = originalExt === ".docx" ? "DOCX" : SOURCE_TYPE_BY_EXTENSION[ext];
+    if (!extract || !sourceType) {
+      throw new Error("Unsupported document type.");
+    }
 
-	const rawChunks = chunkPages(extraction.chunks);
-	const assembled = assembleChunks(extraction.chunks, rawChunks);
-	const chunks = handler.finalize?.(assembled, extraction) ?? assembled;
+    // Keep source info together so every downstream chunk can carry the same document identity
+    const source: Source = {
+      title: title?.trim() || basename(filePath),
+      type: sourceType,
+      path: resolvedPath,
+    };
 
-	if (chunks.length === 0) throw new Error(identity.emptyResultMessage);
+    // Updated linear ingest path: extract pages/tables, chunk text, assemble final chunks, then store
+    report(0, "Starting extraction");
 
-	console.log(
-		`[Ingest] ${source.title}: extracted ${extraction.pageCount} page(s) in ${elapsed(started)}; embedding ${chunks.length} chunk(s)...`
-	);
-	report(50, `Embedding 0 of ${chunks.length} chunks`);
+    const extraction = await extract(source, (current, total) => {
+      report((current / total) * 50, `Extracting ${current} of ${total}`);
+    });
 
-	let lastMilestone = 0;
-	const stored = await storeDocumentChunks(chunks, ({ stage, current, total }) => {
-		if (stage !== 'embedding') return;
-		const ratio = total > 0 ? current / total : 1;
-		const milestone = Math.floor(ratio * 4);
-		if (milestone > lastMilestone && milestone < 4) {
-			lastMilestone = milestone;
-			console.log(`[Ingest] ${source.title}: embedded ${current}/${total} chunk(s)`);
-		}
-		report(50 + ratio * 50, `Embedding ${current} of ${total} chunks`);
-	});
+    const rawChunks = chunkPages(extraction.chunks);
+    const chunks = assembleChunks(rawChunks);
 
-	console.log(
-		`[Ingest] ${source.title}: stored ${stored.chunkCount} chunk(s); done in ${elapsed(started)}.`
-	);
+    if (chunks.length === 0) {
+      throw new Error("No text could be extracted from this file - it may be empty, scanned, or corrupted.");
+    }
 
-	return {
-		documentId: stored.documentId,
-		title: source.title,
-		sourcePath: source.path,
-		pageCount: extraction.pageCount,
-		chunkCount: stored.chunkCount
-	};
+    report(50, `Embedding 0 of ${chunks.length} chunks`);
+
+    const stored = await storeDocumentChunks(
+      chunks,
+      ({ stage: storeStage, current, total }) => {
+        if (storeStage !== "embedding") return;
+        const ratio = total > 0 ? current / total : 1;
+        report(50 + ratio * 50, `Embedding ${current} of ${total} chunks`);
+      },
+    );
+    report(100, "Building Knowledge Graph triplets");
+    await rebuildDocumentTriplets(stored.documentId, chunks);
+    invalidateKnowledgeGraphCache();
+
+    // Invalidate this document's cached graph so it picks up the new chunks
+    invalidateKnowledgeGraphCache([stored.documentId]);
+
+    if (resolvedPath !== filePath) {
+      await rm(filePath, { force: true });
+    }
+
+    return {
+      documentId: stored.documentId,
+      title: source.title,
+      sourcePath: source.path,
+      pageCount: extraction.pageCount,
+      chunkCount: stored.chunkCount,
+    };
+  } catch (error) {
+    if (resolvedPath !== filePath) {
+      await rm(resolvedPath, { force: true });
+    }
+    throw stageError(stage, error);
+  }
 }

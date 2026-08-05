@@ -1,116 +1,218 @@
-import { error, json } from '@sveltejs/kit';
-import { isNotNull } from 'drizzle-orm';
+import { createHash } from "node:crypto";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { count, eq } from "drizzle-orm";
+import { error } from "@sveltejs/kit";
 import type {
-	ApiDocumentIngestEvent,
-	ApiDocumentIngestProgress,
-	ApiDocumentIngestResult
-} from '$lib/types';
-import { db } from '$lib/server/database/database';
-import { documents, syncedFiles } from '$lib/server/database/schema';
-import { folderWatcherManager } from '$lib/server/documents/folder-watcher';
-import { ingestFileBuffer, ingestFilePath } from '$lib/server/documents/ingest-file';
-import { removeDocument } from '$lib/server/documents/remove-document';
-import type { RequestHandler } from './$types';
+  DocumentIngestEvent,
+  DocumentIngestProgress,
+  DocumentIngestResult,
+} from "$lib/requestTypes";
+import { db } from "$lib/server/database/database";
+import { document_chunks, documents, synced_files } from "$lib/server/database/schema";
+import { containsPath } from "$lib/server/documents/remove-document";
+import { clearIngestFailures, recordIngestFailure } from "$lib/server/documents/ingest-failures";
+import { ingestDocument } from "$lib/server/rag/ingest-document";
+import type { RequestHandler } from "./$types";
 
-type IngestTask = (
-	onProgress: (progress: ApiDocumentIngestProgress) => void
-) => Promise<ApiDocumentIngestResult>;
+const DOCUMENTS_DIR = "documents";
+
+type UploadKind = "pdf" | "docx" | "pptx" | "csv" | "xlsx" | "txt" | "md";
+
+function isZip(buffer: Buffer): boolean {
+  // DOCX/PPTX/XLSX are ZIP archives (OOXML); their first bytes are "PK\x03\x04"
+  return buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04;
+}
+
+function detectKind(name: string, buffer: Buffer): UploadKind | null {
+  const lower = name.toLowerCase();
+
+  if (lower.endsWith(".pdf")) {
+    return buffer.subarray(0, 5).toString() === "%PDF-" ? "pdf" : null;
+  }
+  if (lower.endsWith(".docx")) {
+    return isZip(buffer) ? "docx" : null;
+  }
+  if (lower.endsWith(".pptx")) {
+    return isZip(buffer) ? "pptx" : null;
+  }
+  if (lower.endsWith(".xlsx")) {
+    return isZip(buffer) ? "xlsx" : null;
+  }
+  // CSV/TXT/MD are plain text with no magic-byte signature to check - trust the extension.
+  if (lower.endsWith(".csv")) {
+    return "csv";
+  }
+  if (lower.endsWith(".txt")) {
+    return "txt";
+  }
+  if (lower.endsWith(".md")) {
+    return "md";
+  }
+
+  return null;
+}
+
+async function ingestBuffer(
+  originalName: string,
+  buffer: Buffer,
+  onProgress: (progress: DocumentIngestProgress) => void,
+): Promise<DocumentIngestResult> {
+  const kind = detectKind(originalName, buffer);
+  if (!kind) {
+    throw new Error("Only PDF, DOCX, PPTX, CSV, XLSX, TXT, and MD uploads are supported.");
+  }
+
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
+  const savedPath = join(DOCUMENTS_DIR, `${contentHash.slice(0, 16)}.${kind}`);
+  const [existing] = await db
+    .select({
+      documentId: documents.id,
+      title: documents.title,
+      sourcePath: documents.sourcePath,
+      chunkCount: count(document_chunks.id),
+    })
+    .from(documents)
+    .leftJoin(document_chunks, eq(document_chunks.documentId, documents.id))
+    .where(eq(documents.sourcePath, savedPath))
+    .groupBy(documents.id)
+    .limit(1);
+
+  if (existing) {
+    return { ...existing, pageCount: 0, chunkCount: Number(existing.chunkCount ?? 0) };
+  }
+
+  await writeFile(savedPath, buffer);
+
+  const title = originalName.replace(/\.(pdf|docx|pptx|csv|xlsx|txt|md)$/i, "").trim() || originalName;
+
+  try {
+    const result = await ingestDocument({ filePath: savedPath, title }, onProgress);
+    await clearIngestFailures(savedPath);
+    return result;
+  } catch (error) {
+    await recordIngestFailure({ sourcePath: savedPath, title, sourceType: kind.toUpperCase(), error });
+    throw error;
+  }
+}
+
+async function ingestUpload(
+  request: Request,
+  onProgress: (progress: DocumentIngestProgress) => void,
+): Promise<DocumentIngestResult> {
+  const formData = await request.formData();
+  const file = formData.get("file");
+
+  if (!(file instanceof File)) {
+    throw new Error("No file included in upload.");
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return ingestBuffer(file.name, buffer, onProgress);
+}
+
+async function ingestPath(
+  filePath: string,
+  onProgress: (progress: DocumentIngestProgress) => void,
+): Promise<DocumentIngestResult> {
+  const root = await realpath(homedir());
+  const path = await realpath(resolve(filePath));
+  const fileStats = await stat(path);
+
+  if (!containsPath(root, path) || !fileStats.isFile()) {
+    throw new Error("Select a PDF, DOCX, PPTX, CSV, XLSX, TXT, or MD file inside your home folder.");
+  }
+
+  const [tracked] = await db
+    .select({
+      documentId: documents.id,
+      title: documents.title,
+      sourcePath: documents.sourcePath,
+      chunkCount: count(document_chunks.id),
+    })
+    .from(synced_files)
+    .innerJoin(documents, eq(documents.id, synced_files.documentId))
+    .leftJoin(document_chunks, eq(document_chunks.documentId, documents.id))
+    .where(eq(synced_files.sourcePath, path))
+    .groupBy(documents.id)
+    .limit(1);
+
+  if (tracked) {
+    return { ...tracked, pageCount: 0, chunkCount: Number(tracked.chunkCount ?? 0) };
+  }
+
+  return ingestBuffer(basename(path), await readFile(path), onProgress);
+}
 
 export const POST: RequestHandler = async ({ request }) => {
-	let ingest: IngestTask;
-	if (request.headers.get('content-type')?.includes('multipart/form-data')) {
-		const upload = (await request.formData()).get('file');
-		if (!(upload instanceof File)) throw error(400, 'Upload a supported document file.');
-		const name = upload.name || 'document.pdf';
-		const buffer = Buffer.from(await upload.arrayBuffer());
-		ingest = (onProgress) => ingestFileBuffer(name, buffer, onProgress);
-	} else {
-		const body = (await request.json().catch(() => null)) as { path?: unknown } | null;
-		if (typeof body?.path !== 'string' || !body.path.trim()) {
-			throw error(400, 'Select a file.');
-		}
-		const path = body.path;
-		ingest = (onProgress) => ingestFilePath(path, onProgress);
-	}
+  // A document arrives either as a server filesystem path (folder-browser flow) or raw
+  // bytes (pasted file) - the Clipboard API only ever gives JS bytes, never a path.
+  const isUpload = (request.headers.get("content-type") ?? "").includes("multipart/form-data");
 
-	let closed = false;
+  let selectedPath: string | null = null;
+  if (!isUpload) {
+    const { paths } = (await request.json()) as { paths?: unknown };
+    const selectedPaths = Array.isArray(paths)
+      ? paths.filter((path): path is string => typeof path === "string")
+      : [];
 
-	const stream = new ReadableStream({
-		start(controller) {
-			const encoder = new TextEncoder();
-			const send = (event: ApiDocumentIngestEvent) => {
-				if (closed) return;
-				try {
-					controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-				} catch {
-					closed = true;
-				}
-			};
+    if (selectedPaths.length !== 1) {
+      throw error(400, "Upload one PDF, DOCX, PPTX, CSV, XLSX, TXT, or MD file per request.");
+    }
+    selectedPath = selectedPaths[0];
+  }
 
-			void (async () => {
-				try {
-					send({
-						status: 'progress',
-						percent: 0,
-						label: 'Ingesting file',
-						message: 'Preparing file'
-					});
-					const result = await ingest((progress) => send({ status: 'progress', ...progress }));
+  await mkdir(DOCUMENTS_DIR, { recursive: true });
 
-					send({
-						status: 'progress',
-						percent: 100,
-						label: 'Ingesting file',
-						message: 'Complete'
-					});
-					send({ status: 'complete', result });
-				} catch (cause) {
-					console.error('Document ingestion failed', cause);
-					send({
-						status: 'error',
-						message: cause instanceof Error ? cause.message : 'Document ingestion failed'
-					});
-				} finally {
-					if (!closed) {
-						try {
-							controller.close();
-						} catch {
-							closed = true;
-						}
-					}
-				}
-			})().catch((cause) => {
-				console.error('Document ingestion stream failed', cause);
-			});
-		},
-		cancel() {
-			closed = true;
-		}
-	});
+  // Guards against writing to (or closing) a controller the client has already
+  // disconnected from - without this, a mid-ingest disconnect throws
+  // "Invalid state: Controller is already closed".
+  let closed = false;
 
-	return new Response(stream, {
-		headers: {
-			'Cache-Control': 'no-cache',
-			'Content-Type': 'application/x-ndjson; charset=utf-8',
-			'X-Accel-Buffering': 'no'
-		}
-	});
-};
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      const send = (event: DocumentIngestEvent) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          closed = true;
+        }
+      };
 
-export const DELETE: RequestHandler = async () => {
-	const syncedRows = await db
-		.select({ folderId: syncedFiles.folderId })
-		.from(syncedFiles)
-		.where(isNotNull(syncedFiles.documentId));
-	for (const folderId of new Set(syncedRows.map((row) => row.folderId))) {
-		await folderWatcherManager.waitForIdle(folderId);
-	}
+      const run = isUpload
+        ? ingestUpload(request, (progress) => send({ status: "progress", ...progress }))
+        : ingestPath(selectedPath as string, (progress) => send({ status: "progress", ...progress }));
 
-	const rows = await db.select({ id: documents.id }).from(documents);
-	let removed = 0;
-	for (const { id } of rows) {
-		if (await removeDocument(id)) removed += 1;
-	}
+      void run
+        .then((result) => send({ status: "complete", result }))
+        .catch((cause) => {
+          send({
+            status: "error",
+            message: cause instanceof Error ? cause.message : "Document ingestion failed",
+          });
+        })
+        .finally(() => {
+          if (!closed) {
+            try {
+              controller.close();
+            } catch {
+              closed = true;
+            }
+          }
+        });
+    },
+    cancel() {
+      closed = true;
+    },
+  });
 
-	return json({ removed });
+  return new Response(stream, {
+    headers: {
+      "Cache-Control": "no-cache",
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+    },
+  });
 };

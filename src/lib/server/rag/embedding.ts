@@ -1,131 +1,133 @@
-import { createHash } from 'node:crypto';
-import { eq } from 'drizzle-orm';
-import { db } from '../database/database';
+import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { db } from "../database/database";
 import {
-	documentChunks,
-	documents,
-	type NewDocument,
-	type NewDocumentChunk
-} from '../database/schema';
-import type { ParsedChunk } from './chunk/parse-shared';
-import { embedTexts } from './embedding-model';
+  document_chunks,
+  documents,
+  type NewDocument,
+  type NewDocumentChunk,
+} from "../database/schema";
+import type { ParsedChunk } from "./chunk/parse-shared";
+import { embedTexts } from "./embedding-model";
 
 const INSERT_BATCH_SIZE = 100; //Can adjust later
 // Embed in bounded slices so a huge document never holds every raw vector at once
 const EMBED_SLICE_SIZE = 256;
 
 type StoreChunksResult = {
-	documentId: string;
-	chunkCount: number;
+  documentId: string;
+  chunkCount: number;
 };
 
 export type StoreDocumentProgress = {
-	stage: 'embedding' | 'storing';
-	current: number;
-	total: number;
+  stage: "embedding" | "storing";
+  current: number;
+  total: number;
 };
 
 // SQLite DB stores embeddings as bytes, however semantic search reads them back as Float32 vectors
-function embeddingToBuffer(values: Float32Array): Buffer {
-	return Buffer.from(values.buffer, values.byteOffset, values.byteLength);
+function embeddingToBuffer(values: number[]): Buffer {
+  const array = Float32Array.from(values);
+  return Buffer.from(array.buffer, array.byteOffset, array.byteLength);
 }
 
 // The document id is path based so reingesting the same file replaces the same document. Prevents duplicate documents!
 function buildDocumentRow(chunks: ParsedChunk[], now: string): NewDocument {
-	const source = chunks[0].source;
+  const source = chunks[0].source;
 
-	return {
-		id: createHash('sha256').update(source.path).digest('hex'),
-		title: source.title,
-		sourcePath: source.path,
-		sourceType: source.type,
-		createdAt: now,
-		updatedAt: now
-	};
+  return {
+    id: createHash("sha256").update(source.path).digest("hex"),
+    title: source.title,
+    sourcePath: source.path,
+    sourceType: source.type,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 // Parsed chunks stay pipeline-shaped until this point; this is the DB row mapping boundary
 function buildChunkRow(
-	chunk: ParsedChunk,
-	documentId: string,
-	embedding: Float32Array,
-	now: string
+  chunk: ParsedChunk,
+  documentId: string,
+  embedding: number[],
+  now: string,
 ): NewDocumentChunk {
-	return {
-		id: chunk.chunkId,
-		documentId,
-		chunkType: chunk.chunkType,
-		pageIndex: chunk.pageIndex,
-		chunkIndex: chunk.chunkIndex,
-		content: chunk.content,
-		startMs: chunk.startMs ?? null,
-		endMs: chunk.endMs ?? null,
-		embedding: embeddingToBuffer(embedding),
-		createdAt: now
-	};
+  return {
+    id: chunk.chunkId,
+    documentId,
+    chunkType: chunk.chunkType,
+    pageIndex: chunk.pageIndex,
+    chunkIndex: chunk.chunkIndex,
+    content: chunk.content,
+    startMs: chunk.startMs ?? null,
+    endMs: chunk.endMs ?? null,
+    embedding: embeddingToBuffer(embedding),
+    createdAt: now,
+  };
 }
 
 export async function storeDocumentChunks(
-	chunks: ParsedChunk[],
-	onProgress?: (progress: StoreDocumentProgress) => void
+  chunks: ParsedChunk[],
+  onProgress?: (progress: StoreDocumentProgress) => void,
 ): Promise<StoreChunksResult> {
-	if (chunks.length === 0) {
-		throw new Error('Cannot store embeddings for an empty chunk list.');
-	}
+  if (chunks.length === 0) {
+    throw new Error("Cannot store embeddings for an empty chunk list.");
+  }
 
-	const now = new Date().toISOString();
-	const documentRow = buildDocumentRow(chunks, now);
-	const chunkRows: NewDocumentChunk[] = [];
+  const now = new Date().toISOString();
+  const documentRow = buildDocumentRow(chunks, now);
+  const chunkRows: NewDocumentChunk[] = [];
 
-	// Embed the final assembled chunks only, so stored vectors match the exact stored content
-	for (let offset = 0; offset < chunks.length; offset += EMBED_SLICE_SIZE) {
-		const slice = chunks.slice(offset, offset + EMBED_SLICE_SIZE);
-		const embeddings = await embedTexts(
-			slice.map((chunk) => chunk.content),
-			'search_document',
-			(current) =>
-				onProgress?.({ stage: 'embedding', current: offset + current, total: chunks.length })
-		);
+  // Embed the final assembled chunks only, so stored vectors match the exact stored content.
+  // Sliced so a huge document never holds every raw vector in memory at once.
+  for (let offset = 0; offset < chunks.length; offset += EMBED_SLICE_SIZE) {
+    const slice = chunks.slice(offset, offset + EMBED_SLICE_SIZE);
+    const embeddings = await embedTexts(
+      slice.map((chunk) => chunk.content),
+      "search_document",
+      (current) =>
+        onProgress?.({ stage: "embedding", current: offset + current, total: chunks.length }),
+    );
 
-		for (let index = 0; index < slice.length; index += 1) {
-			chunkRows.push(
-				buildChunkRow(slice[index], documentRow.id, embeddings[index] ?? new Float32Array(0), now)
-			);
-		}
-	}
+    for (let index = 0; index < slice.length; index += 1) {
+      chunkRows.push(
+        buildChunkRow(slice[index], documentRow.id, embeddings[index] ?? [], now),
+      );
+    }
+  }
 
-	onProgress?.({ stage: 'storing', current: 0, total: chunkRows.length });
+  onProgress?.({ stage: "storing", current: 0, total: chunkRows.length });
 
-	// Upsert the document shell first, then replace its chunks in one clean ingest pass
-	await db.transaction(async (tx) => {
-		await tx
-			.insert(documents)
-			.values(documentRow)
-			.onConflictDoUpdate({
-				target: documents.id,
-				set: {
-					title: documentRow.title,
-					sourcePath: documentRow.sourcePath,
-					sourceType: documentRow.sourceType,
-					updatedAt: documentRow.updatedAt
-				}
-			});
+  // Upsert the document shell first, then replace its chunks in one clean ingest pass
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(documents)
+      .values(documentRow)
+      .onConflictDoUpdate({
+        target: documents.id,
+        set: {
+          title: documentRow.title,
+          sourcePath: documentRow.sourcePath,
+          sourceType: documentRow.sourceType,
+          updatedAt: documentRow.updatedAt,
+        },
+      });
 
-		await tx.delete(documentChunks).where(eq(documentChunks.documentId, documentRow.id));
+    await tx.delete(document_chunks).where(eq(document_chunks.documentId, documentRow.id));
 
-		// Batch SQL inserts so large PDFs do not break the code
-		for (let index = 0; index < chunkRows.length; index += INSERT_BATCH_SIZE) {
-			await tx.insert(documentChunks).values(chunkRows.slice(index, index + INSERT_BATCH_SIZE));
-			onProgress?.({
-				stage: 'storing',
-				current: Math.min(index + INSERT_BATCH_SIZE, chunkRows.length),
-				total: chunkRows.length
-			});
-		}
-	});
+    // Batch SQL inserts so large PDFs do not break the code
+    for (let index = 0; index < chunkRows.length; index += INSERT_BATCH_SIZE) {
+      await tx.insert(document_chunks).values(chunkRows.slice(index, index + INSERT_BATCH_SIZE));
+      onProgress?.({
+        stage: "storing",
+        current: Math.min(index + INSERT_BATCH_SIZE, chunkRows.length),
+        total: chunkRows.length,
+      });
+    }
+  });
 
-	return {
-		documentId: documentRow.id,
-		chunkCount: chunkRows.length
-	};
+  return {
+    documentId: documentRow.id,
+    chunkCount: chunkRows.length,
+  };
 }

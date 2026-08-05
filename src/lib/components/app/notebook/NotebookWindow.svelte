@@ -61,6 +61,8 @@
 
 	let notes = $state('');
 	let previewMode = $state(false);
+	let editorTextareaRef = $state<HTMLTextAreaElement | null>(null);
+	let previewViewportRef = $state<HTMLDivElement | null>(null);
 	let view = $state<NotebookView>('editor');
 	let syncedPageId = $state<string | null>(null);
 	let lastSavedNotes = $state('');
@@ -512,7 +514,7 @@
 				/>
 			</NotebookSearch>
 		{:else if previewMode}
-			<NotebookPreview content={notes} />
+			<NotebookPreview content={notes} bind:viewportRef={previewViewportRef} />
 		{:else}
 			<NotebookEditor
 				bind:ref={notesTextarea}

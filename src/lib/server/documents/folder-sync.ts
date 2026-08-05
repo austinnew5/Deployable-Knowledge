@@ -1,233 +1,263 @@
-import { copyFile, mkdir, readFile, readdir, stat } from 'node:fs/promises';
-import { basename, extname, resolve } from 'node:path';
-import { eq } from 'drizzle-orm';
-import type {
-	ApiDocumentIngestProgress,
-	ApiDocumentSyncFileProgress,
-	ApiDocumentSyncResult
-} from '$lib/types';
-import { db } from '$lib/server/database/database';
-import { documents, syncedFiles } from '$lib/server/database/schema';
-import { SyncedFoldersRepository } from '$lib/server/repositories';
-import { ingestDocument } from '$lib/server/rag/ingest-document';
-import { hashFileContents, managedPathForHash } from './ingest-file';
-import { managedExtensionFor, writeManagedArtifacts } from './managed-artifacts';
-import { removeDocument, removeManagedDocumentFile } from './remove-document';
-import { handlerForPath, isSyncableFile } from './source-types';
+import { createHash } from "node:crypto";
+import { copyFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
+import { eq } from "drizzle-orm";
+import type { DocumentIngestProgress } from "$lib/requestTypes";
+import { db } from "$lib/server/database/database";
+import { documents, synced_files, synced_folders } from "$lib/server/database/schema";
+import { ingestDocument, isSupportedDocument } from "$lib/server/rag/ingest-document";
+import { clearIngestFailures, recordIngestFailure } from "./ingest-failures";
+import { removeDocument, removeManagedDocumentFile } from "./remove-document";
 
-export type SyncProgressCallback = (progress: ApiDocumentSyncFileProgress) => void;
+export type SyncFolderResult = {
+  added: number;
+  updated: number;
+  removed: number;
+  unchanged: number;
+  failed: number;
+};
 
-interface SyncFile {
-	mtimeMs: number;
-	size: number;
-	sourcePath: string;
-}
+export type SyncFileProgress = {
+  sourcePath: string;
+  status: "queued" | "ingesting" | "added" | "updated" | "unchanged" | "removed" | "failed";
+  percent?: number;
+  label?: string;
+  message?: string;
+};
+
+export type SyncProgressCallback = (progress: SyncFileProgress) => void;
+
+type SyncFile = {
+  sourcePath: string;
+  mtimeMs: number;
+  size: number;
+};
 
 async function findFiles(directory: string): Promise<SyncFile[]> {
-	const entries = await readdir(directory, { withFileTypes: true, recursive: true });
-	const files = entries.filter((entry) => entry.isFile() && isSyncableFile(entry.name));
-	const values = await Promise.all(
-		files.map(async (file) => {
-			const sourcePath = resolve(file.parentPath, file.name);
-			const { mtimeMs, size } = await stat(sourcePath);
-			return { sourcePath, mtimeMs: Math.trunc(mtimeMs), size };
-		})
-	);
-	return values.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
-}
+  const entries = await readdir(directory, { withFileTypes: true, recursive: true });
+  const files = entries.filter(
+    (entry) => entry.isFile() && isSupportedDocument(entry.name),
+  );
 
-async function managedPathFor(sourcePath: string): Promise<string> {
-	const handler = handlerForPath(sourcePath);
-	const extension = handler
-		? managedExtensionFor(handler, sourcePath)
-		: extname(sourcePath).toLowerCase();
-	return managedPathForHash(await hashFileContents(sourcePath), extension);
+  return Promise.all(
+    files.map(async (file) => {
+      const sourcePath = resolve(file.parentPath, file.name);
+      const { mtimeMs, size } = await stat(sourcePath);
+      return { sourcePath, mtimeMs: Math.trunc(mtimeMs), size };
+    }),
+  );
 }
 
 async function ingestManagedCopy(
-	sourcePath: string,
-	managedPath: string,
-	onProgress?: (progress: ApiDocumentIngestProgress) => void
+  sourcePath: string,
+  managedPath: string,
+  onProgress?: (progress: DocumentIngestProgress) => void,
 ) {
-	const handler = handlerForPath(sourcePath);
-	if (!handler) throw new Error('Unsupported document type.');
+  try {
+    await copyFile(sourcePath, managedPath);
 
-	// Converted artifacts need the original bytes in memory; plain formats copy without buffering
-	if (handler.convert || handler.preview) {
-		await writeManagedArtifacts(handler, await readFile(sourcePath), managedPath);
-	} else {
-		await copyFile(sourcePath, managedPath);
-	}
-	try {
-		const title = basename(sourcePath, extname(sourcePath)).trim() || basename(sourcePath);
-		return await ingestDocument(
-			{ filePath: managedPath, title, sourceType: handler.type },
-			onProgress
-		);
-	} catch (error) {
-		await removeManagedDocumentFile(managedPath);
-		throw error;
-	}
+    const title = basename(sourcePath, extname(sourcePath)).trim() || basename(sourcePath);
+    return await ingestDocument({ filePath: managedPath, title }, onProgress);
+  } catch (error) {
+    await removeManagedDocumentFile(managedPath);
+    throw error;
+  }
+}
+
+async function managedPathFor(sourcePath: string): Promise<string> {
+  const contentHash = createHash("sha256").update(await readFile(sourcePath)).digest("hex");
+  return join("documents", contentHash.slice(0, 16) + extname(sourcePath).toLowerCase());
 }
 
 export async function syncFolder(
-	folderId: string,
-	onProgress?: SyncProgressCallback,
-	shouldStop?: () => boolean
-): Promise<ApiDocumentSyncResult> {
-	const folder = await SyncedFoldersRepository.find(folderId);
-	if (!folder) throw new Error(`Synced folder not found: ${folderId}`);
+  folderId: string,
+  onProgress?: SyncProgressCallback,
+  shouldStop?: () => boolean,
+): Promise<SyncFolderResult> {
+  const [folder] = await db
+    .select()
+    .from(synced_folders)
+    .where(eq(synced_folders.id, folderId));
 
-	const sourceFiles = await findFiles(resolve(folder.path));
-	const trackedFiles = await SyncedFoldersRepository.syncedFiles(folderId);
-	const trackedByPath = new Map(trackedFiles.map((file) => [file.sourcePath, file]));
-	const currentPaths = new Set(sourceFiles.map((file) => file.sourcePath));
-	const result: ApiDocumentSyncResult = {
-		added: 0,
-		updated: 0,
-		removed: 0,
-		unchanged: 0,
-		failed: 0
-	};
+  if (!folder) throw new Error(`Synced folder not found: ${folderId}`);
 
-	for (const file of sourceFiles) {
-		if (!trackedByPath.get(file.sourcePath)?.ignored) {
-			onProgress?.({ sourcePath: file.sourcePath, status: 'queued' });
-		}
-	}
+  const folderPath = resolve(folder.path);
+  const sourceFiles = await findFiles(folderPath);
 
-	await mkdir('documents', { recursive: true });
+  const trackedFiles = await db
+    .select()
+    .from(synced_files)
+    .where(eq(synced_files.folderId, folderId));
+  const trackedByPath = new Map(trackedFiles.map((file) => [file.sourcePath, file]));
+  const currentPaths = new Set(sourceFiles.map((file) => file.sourcePath));
+  const result: SyncFolderResult = {
+    added: 0,
+    updated: 0,
+    removed: 0,
+    unchanged: 0,
+    failed: 0,
+  };
 
-	for (const file of sourceFiles) {
-		if (shouldStop?.()) return result;
-		const tracked = trackedByPath.get(file.sourcePath);
-		if (tracked?.ignored) continue;
+  for (const file of sourceFiles) {
+    if (!trackedByPath.get(file.sourcePath)?.ignored) {
+      onProgress?.({ sourcePath: file.sourcePath, status: "queued" });
+    }
+  }
 
-		if (tracked?.documentId && tracked.mtimeMs === file.mtimeMs && tracked.size === file.size) {
-			result.unchanged += 1;
-			onProgress?.({ sourcePath: file.sourcePath, status: 'unchanged' });
-			continue;
-		}
+  await mkdir("documents", { recursive: true });
 
-		let managedPath = tracked?.managedPath ?? '';
-		let ingestedDocumentId: string | null = null;
-		let createdDocument = false;
+  // Intentionally sequential until the Scribe lifecycle is made concurrency-safe and benchmarked.
+  for (const file of sourceFiles) {
+    if (shouldStop?.()) return result;
+    const tracked = trackedByPath.get(file.sourcePath);
 
-		try {
-			onProgress?.({ sourcePath: file.sourcePath, status: 'ingesting' });
+    if (tracked?.ignored) {
+      continue;
+    }
 
-			handlerForPath(file.sourcePath)?.validateFile?.({ path: file.sourcePath, size: file.size });
+    const unchanged =
+      tracked?.documentId &&
+      tracked.mtimeMs === file.mtimeMs &&
+      tracked.size === file.size;
 
-			managedPath = await managedPathFor(file.sourcePath);
+    if (unchanged) {
+      result.unchanged += 1;
+      onProgress?.({ sourcePath: file.sourcePath, status: "unchanged" });
+      continue;
+    }
 
-			const [existingDocument] = await db
-				.select({ id: documents.id })
-				.from(documents)
-				.where(eq(documents.sourcePath, managedPath))
-				.limit(1);
+    let managedPath = tracked?.managedPath ?? "";
+    let ingestedDocumentId: string | null = null;
+    let createdDocument = false;
 
-			const [existingOwner] = existingDocument
-				? await db
-						.select({ folderId: syncedFiles.folderId, sourcePath: syncedFiles.sourcePath })
-						.from(syncedFiles)
-						.where(eq(syncedFiles.documentId, existingDocument.id))
-						.limit(1)
-				: [];
+    try {
+      onProgress?.({ sourcePath: file.sourcePath, status: "ingesting" });
 
-			if (existingOwner && existingOwner.sourcePath !== file.sourcePath) {
-				const renamedInThisFolder =
-					existingOwner.folderId === folderId && !currentPaths.has(existingOwner.sourcePath);
-				if (renamedInThisFolder) {
-					await db.delete(syncedFiles).where(eq(syncedFiles.sourcePath, existingOwner.sourcePath));
-					currentPaths.add(existingOwner.sourcePath);
-				} else {
-					if (tracked?.documentId) {
-						await removeDocument(tracked.documentId, { syncedFileDisposition: 'remove' });
-					}
-					result.unchanged += 1;
-					onProgress?.({ sourcePath: file.sourcePath, status: 'unchanged' });
-					continue;
-				}
-			}
+      managedPath = await managedPathFor(file.sourcePath);
+      const [existingDocument] = await db
+        .select({ id: documents.id })
+        .from(documents)
+        .where(eq(documents.sourcePath, managedPath))
+        .limit(1);
+      const [existingOwner] = existingDocument
+        ? await db
+            .select({ sourcePath: synced_files.sourcePath, folderId: synced_files.folderId })
+            .from(synced_files)
+            .where(eq(synced_files.documentId, existingDocument.id))
+            .limit(1)
+        : [];
 
-			if (existingDocument) {
-				ingestedDocumentId = existingDocument.id;
-			} else {
-				ingestedDocumentId = (
-					await ingestManagedCopy(file.sourcePath, managedPath, (progress) => {
-						onProgress?.({ sourcePath: file.sourcePath, status: 'ingesting', ...progress });
-					})
-				).documentId;
-				createdDocument = true;
-			}
+      if (existingOwner && existingOwner.sourcePath !== file.sourcePath) {
+        const renamedInThisFolder =
+          existingOwner.folderId === folderId && !currentPaths.has(existingOwner.sourcePath);
 
-			await db
-				.insert(syncedFiles)
-				.values({
-					sourcePath: file.sourcePath,
-					folderId,
-					managedPath,
-					documentId: ingestedDocumentId,
-					mtimeMs: file.mtimeMs,
-					size: file.size,
-					ignored: false
-				})
-				.onConflictDoUpdate({
-					target: syncedFiles.sourcePath,
-					set: {
-						folderId,
-						managedPath,
-						documentId: ingestedDocumentId,
-						mtimeMs: file.mtimeMs,
-						size: file.size,
-						ignored: false
-					}
-				});
+        if (renamedInThisFolder) {
+          await db.delete(synced_files).where(eq(synced_files.sourcePath, existingOwner.sourcePath));
+          currentPaths.add(existingOwner.sourcePath);
+        } else {
+          if (tracked?.documentId) {
+            await removeDocument(tracked.documentId, { syncedFileDisposition: "remove" });
+          }
+          result.unchanged += 1;
+          onProgress?.({
+            sourcePath: file.sourcePath,
+            status: "unchanged",
+          });
+          continue;
+        }
+      }
 
-			if (tracked?.documentId && tracked.documentId !== ingestedDocumentId) {
-				await removeDocument(tracked.documentId, { syncedFileDisposition: 'remove' });
-			}
+      if (existingDocument) {
+        ingestedDocumentId = existingDocument.id;
+      } else {
+        ingestedDocumentId = (
+          await ingestManagedCopy(file.sourcePath, managedPath, (progress) => {
+            onProgress?.({ sourcePath: file.sourcePath, status: "ingesting", ...progress });
+          })
+        ).documentId;
+        createdDocument = true;
+      }
 
-			const status = tracked ? 'updated' : 'added';
-			result[status] += 1;
-			onProgress?.({ sourcePath: file.sourcePath, status });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			result.failed += 1;
-			onProgress?.({ sourcePath: file.sourcePath, status: 'failed', message });
-			console.error(`[Folder Sync] ${file.sourcePath}: ${message}`);
+      await db
+        .insert(synced_files)
+        .values({
+          sourcePath: file.sourcePath,
+          folderId,
+          managedPath,
+          documentId: ingestedDocumentId,
+          mtimeMs: file.mtimeMs,
+          size: file.size,
+          ignored: false,
+        })
+        .onConflictDoUpdate({
+          target: synced_files.sourcePath,
+          set: {
+            folderId,
+            managedPath,
+            documentId: ingestedDocumentId,
+            mtimeMs: file.mtimeMs,
+            size: file.size,
+            ignored: false,
+          },
+        });
 
-			if (!tracked && createdDocument) {
-				try {
-					if (ingestedDocumentId) {
-						await removeDocument(ingestedDocumentId, { syncedFileDisposition: 'remove' });
-					} else {
-						await removeManagedDocumentFile(managedPath);
-					}
-				} catch (cleanupError) {
-					console.error(`[Folder Sync] Cleanup failed for ${file.sourcePath}:`, cleanupError);
-				}
-			}
-		}
-	}
+      if (tracked?.documentId && tracked.documentId !== ingestedDocumentId) {
+        await removeDocument(tracked.documentId, { syncedFileDisposition: "remove" });
+      }
 
-	if (shouldStop?.()) return result;
+      await clearIngestFailures(file.sourcePath);
 
-	for (const tracked of trackedFiles) {
-		if (currentPaths.has(tracked.sourcePath)) continue;
-		if (tracked.documentId) {
-			await removeDocument(tracked.documentId, { syncedFileDisposition: 'remove' });
-		} else {
-			await db.delete(syncedFiles).where(eq(syncedFiles.sourcePath, tracked.sourcePath));
-			await removeManagedDocumentFile(tracked.managedPath);
-		}
-		result.removed += 1;
-		onProgress?.({ sourcePath: tracked.sourcePath, status: 'removed' });
-	}
+      const status = tracked ? "updated" : "added";
+      result[status] += 1;
+      onProgress?.({ sourcePath: file.sourcePath, status });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result.failed += 1;
+      onProgress?.({ sourcePath: file.sourcePath, status: "failed", message });
+      console.error(`[Folder Sync] ${file.sourcePath}: ${message}`);
+      await recordIngestFailure({
+        sourcePath: file.sourcePath,
+        title: basename(file.sourcePath, extname(file.sourcePath)),
+        error,
+      });
 
-	await SyncedFoldersRepository.setLastError(
-		folderId,
-		result.failed ? `${result.failed} file(s) failed to sync.` : null
-	);
-	return result;
+      if (!tracked && createdDocument) {
+        try {
+          if (ingestedDocumentId) {
+            await removeDocument(ingestedDocumentId, { syncedFileDisposition: "remove" });
+          } else {
+            await removeManagedDocumentFile(managedPath);
+          }
+        } catch (cleanupError) {
+          console.error(`[Folder Sync] Cleanup failed for ${file.sourcePath}: ${cleanupError}`);
+        }
+      }
+    }
+  }
+
+  if (shouldStop?.()) return result;
+
+  for (const tracked of trackedFiles) {
+    if (currentPaths.has(tracked.sourcePath)) continue;
+
+    if (tracked.documentId) {
+      await removeDocument(tracked.documentId, {
+        syncedFileDisposition: "remove",
+      });
+    } else {
+      await db.delete(synced_files).where(eq(synced_files.sourcePath, tracked.sourcePath));
+      await removeManagedDocumentFile(tracked.managedPath);
+    }
+
+    result.removed += 1;
+    onProgress?.({ sourcePath: tracked.sourcePath, status: "removed" });
+  }
+
+  const lastError = result.failed > 0 ? `${result.failed} file(s) failed to sync.` : null;
+  await db
+    .update(synced_folders)
+    .set({ lastError })
+    .where(eq(synced_folders.id, folderId));
+
+  return result;
 }
