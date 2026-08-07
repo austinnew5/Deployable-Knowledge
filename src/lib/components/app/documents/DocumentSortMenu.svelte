@@ -5,16 +5,7 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { cn } from '$lib/components/ui/utils';
-	import type { DocumentSortMode } from '$lib/types';
-
-	const SORT_OPTIONS: readonly { value: DocumentSortMode; label: string }[] = [
-		{ value: 'title-asc', label: 'A → Z' },
-		{ value: 'title-desc', label: 'Z → A' },
-		{ value: 'newest', label: 'Newest' },
-		{ value: 'oldest', label: 'Oldest' },
-		{ value: 'most-chunks', label: 'Most chunks' },
-		{ value: 'least-chunks', label: 'Least chunks' }
-	];
+import { DOCUMENT_SORT_OPTIONS, type DocumentSortMode } from '$lib/utils';
 
 	interface Props {
 		onChange: (value: DocumentSortMode) => void;
@@ -30,18 +21,20 @@
 			<Tooltip.Root>
 				<Tooltip.Trigger
 					{...mergeProps(props, {
-						class: cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'cursor-pointer')
-					})}
-				>
-					<ArrowUpDown />
+                        class: cn(buttonVariants({ variant: 'outline' }), 'cursor-pointer')
+                    })}
+                >
+                    <ArrowUpDown /> Sort
 				</Tooltip.Trigger>
 				<Tooltip.Content>Sort documents</Tooltip.Content>
 			</Tooltip.Root>
 		{/snippet}
 	</DropdownMenu.Trigger>
 	<DropdownMenu.Content align="end" class="w-44">
-		<DropdownMenu.RadioGroup {value} onValueChange={(next) => onChange(next as DocumentSortMode)}>
-			{#each SORT_OPTIONS as option (option.value)}
+        <!-- bits-ui types this as a plain string, so we cast back to our
+             sort mode union instead of typing every value by hand -->
+        <DropdownMenu.RadioGroup {value} onValueChange={(next) => onChange(next as DocumentSortMode)}>
+            {#each DOCUMENT_SORT_OPTIONS as option (option.value)}
 				<DropdownMenu.RadioItem value={option.value}>{option.label}</DropdownMenu.RadioItem>
 			{/each}
 		</DropdownMenu.RadioGroup>
