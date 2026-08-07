@@ -61,7 +61,7 @@ if (-not (Test-CommandExists 'node')) {
 	Update-SessionPath
 
 	if (-not (Test-CommandExists 'node')) {
-		throw "Node.js installed but isn't on PATH yet. Close this window and run start.bat again."
+		throw "Node.js installed but isn't on PATH yet. Close this window and run START.bat again."
 	}
 	Write-Host 'Node.js installed.' -ForegroundColor Green
 } else {
@@ -82,7 +82,7 @@ if (-not (Test-CommandExists 'ollama')) {
 	Update-SessionPath
 
 	if (-not (Test-CommandExists 'ollama')) {
-		throw "Ollama installed but isn't on PATH yet. Close this window and run start.bat again."
+		throw "Ollama installed but isn't on PATH yet. Close this window and run START.bat again."
 	}
 	Write-Host 'Ollama installed.' -ForegroundColor Green
 } else {
@@ -91,14 +91,22 @@ if (-not (Test-CommandExists 'ollama')) {
 
 # --- Make sure the Ollama server is actually running ----------------------
 if (-not (Test-OllamaResponding)) {
-	Write-Host 'Starting Ollama...'
+	Write-Host 'Starting Ollama - right after a fresh install this can take a minute (antivirus scanning the new files, first-run setup)...'
 	Start-Process -FilePath 'ollama' -ArgumentList 'serve' -WindowStyle Hidden
-	$attempts = 0
-	while (-not (Test-OllamaResponding) -and $attempts -lt 15) {
-		Start-Sleep -Seconds 1
-		$attempts++
+
+	$deadline = (Get-Date).AddSeconds(90)
+	$lastNotice = Get-Date
+	while ((Get-Date) -lt $deadline) {
+		if (Test-OllamaResponding) { break }
+		Start-Sleep -Seconds 2
+		if (((Get-Date) - $lastNotice).TotalSeconds -ge 15) {
+			Write-Host '...still waiting on Ollama'
+			$lastNotice = Get-Date
+		}
 	}
-	if (-not (Test-OllamaResponding)) { throw 'Ollama did not start. Try running "ollama serve" manually.' }
+	if (-not (Test-OllamaResponding)) {
+		throw 'Ollama did not start within 90 seconds. Try running "ollama serve" in a new terminal to see what it says.'
+	}
 }
 Write-Host 'Ollama is running.' -ForegroundColor Green
 

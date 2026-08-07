@@ -37,6 +37,13 @@ single windowed workspace that can run against local Ollama models or GitHub Mod
 
 ## Getting Started
 
+### Windows quick start
+
+Double-click [`START.bat`](START.bat) in the project root. It installs Node.js and Ollama if
+you don't have them, pulls the default chat model, runs `npm install`, and opens the app in your
+browser. Safe to run again any time - each step checks first and skips what's already done. See
+[`setup.ps1`](setup.ps1) for exactly what it does.
+
 ### Prerequisites
 
 - Node.js matching [`.nvmrc`](.nvmrc)
