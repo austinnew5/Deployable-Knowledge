@@ -3,10 +3,13 @@ import type {
 	ApiDocumentDirectoryResponse,
 	ApiNotebookCollectionImportRequest,
 	ApiNotebookMarkdownImportRequest,
+	ApiNotebookMasterCorpusRequest,
+	ApiNotebookMasterCorpusResponse,
 	ApiNotebookPageContentRequest,
 	ApiNotebookPageMoveRequest,
 	ApiNotebookPageTitleRequest,
 	ApiNotebookSourcesRequest,
+	ApiNotebookSourcesResponse,
 	ApiNotebookTitleRequest,
 	ApiReorderRequest,
 	ApiReorderResponse,
@@ -52,6 +55,13 @@ export class NotebooksService {
 
 	static exportNotebook(id: string) {
 		return apiDownload(API_NOTEBOOKS.export(id), 'notebook.zip');
+	}
+
+	static addToMasterCorpus(id: string, pageIds: string[]) {
+		return apiPost<ApiNotebookMasterCorpusResponse, ApiNotebookMasterCorpusRequest>(
+			API_NOTEBOOKS.masterCorpus(id),
+			{ pageIds }
+		);
 	}
 
 	static select(id: string) {
@@ -107,7 +117,7 @@ export class NotebooksService {
 	}
 
 	static addSources(id: string, chunkIds: string[]) {
-		return apiPost<{ ok: true; added: number }, ApiNotebookSourcesRequest>(
+		return apiPost<ApiNotebookSourcesResponse, ApiNotebookSourcesRequest>(
 			API_NOTEBOOKS.sources(id),
 			{ chunk_ids: chunkIds }
 		);

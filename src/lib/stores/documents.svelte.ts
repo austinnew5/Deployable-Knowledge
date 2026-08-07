@@ -11,7 +11,8 @@ import type {
 	ApiSyncedFolder,
 	DocumentListMode,
 	DocumentRow,
-	SortDirection
+	DocumentSortMode,
+	IngestFailure
 } from '$lib/types';
 
 const PAGE_SIZE = 50;
@@ -22,6 +23,7 @@ class DocumentsStore {
 	private _documents = $state<DocumentRow[]>([]);
 	private _tags = $state<string[]>([]);
 	private _folders = $state<ApiSyncedFolder[]>([]);
+	private _failures = $state<IngestFailure[]>([]);
 	private _selectedIds = $state(new SvelteSet<string>());
 	private _syncFiles = $state<ApiDocumentSyncFileProgress[]>([]);
 	private _total = $state(0);
@@ -29,7 +31,7 @@ class DocumentsStore {
 	private _query = $state('');
 	private _tagFilters = $state<string[]>([]);
 	private _mode = $state<DocumentListMode>('all');
-	private _sort = $state<SortDirection>('asc');
+	private _sort = $state<DocumentSortMode>('title-asc');
 	private queryTimer: ReturnType<typeof setTimeout> | undefined;
 	private listRequest = 0;
 	progress = $state<ApiDocumentIngestProgress | null>(null);
@@ -49,6 +51,10 @@ class DocumentsStore {
 
 	get folders(): ApiSyncedFolder[] {
 		return this._folders;
+	}
+
+	get failures(): IngestFailure[] {
+		return this._failures;
 	}
 
 	get syncFiles(): ApiDocumentSyncFileProgress[] {
@@ -83,7 +89,7 @@ class DocumentsStore {
 		return this._mode;
 	}
 
-	get sort(): SortDirection {
+	get sort(): DocumentSortMode {
 		return this._sort;
 	}
 
@@ -140,9 +146,20 @@ class DocumentsStore {
 		void this.load();
 	}
 
-	toggleSort(): void {
-		this._sort = this._sort === 'asc' ? 'desc' : 'asc';
+	setSort(mode: DocumentSortMode): void {
+		if (this._sort === mode) return;
+		this._sort = mode;
 		void this.load();
+	}
+
+	async dismissFailure(id: string): Promise<void> {
+		await DocumentsService.dismissFailure(id);
+		this._failures = this._failures.filter((failure) => failure.id !== id);
+	}
+
+	async clearFailures(): Promise<void> {
+		await DocumentsService.clearFailures();
+		this._failures = [];
 	}
 
 	select(id: string): void {
@@ -208,6 +225,18 @@ class DocumentsStore {
 		return result;
 	}
 
+	async uploadFile(file: File) {
+		this.progress = { percent: 0, label: 'Ingesting file', message: 'Preparing file' };
+		const result = await DocumentsService.uploadFile(
+			file,
+			(progress) => (this.progress = progress)
+		);
+		this._selectedIds.add(result.documentId);
+		this.progress = null;
+		await this.refresh();
+		return result;
+	}
+
 	async addFolder(path: string): Promise<ApiDocumentFolderSyncResponse> {
 		return this.runFolderSync((onProgress) => DocumentsService.addFolder(path, onProgress));
 	}
@@ -246,14 +275,16 @@ class DocumentsStore {
 		this.loading = true;
 		this.error = null;
 		try {
-			const [result, folderResult] = await Promise.all([
+			const [result, folderResult, failuresResult] = await Promise.all([
 				DocumentsService.list({ ...this.listQuery(), offset: 0, limit }),
-				DocumentsService.listFolders()
+				DocumentsService.listFolders(),
+				DocumentsService.listFailures()
 			]);
 			if (request !== this.listRequest) return;
 			this._documents = result.documents;
 			this._tags = result.tags;
 			this._folders = folderResult.folders;
+			this._failures = failuresResult.failures;
 			this._total = result.total;
 			this._folderCounts = result.folderCounts;
 			this._tagFilters = this._tagFilters.filter((tag) => result.tags.includes(tag));

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import type { ApiNotebookSourcesRequest } from '$lib/types';
 import { db } from '$lib/server/database/database';
 import {
@@ -25,6 +25,7 @@ export type NotebookSourceItem = Pick<NotebookSource, 'id' | 'chunkId' | 'create
 	Pick<DocumentChunk, 'pageIndex'> & {
 		documentId: Document['id'];
 		documentTitle: Document['title'];
+		sourceType: Document['sourceType'];
 		preview: string;
 	};
 
@@ -40,6 +41,7 @@ export const GET: RequestHandler = async ({ params }) => {
 			chunkId: notebookSources.chunkId,
 			documentId: documents.id,
 			documentTitle: documents.title,
+			sourceType: documents.sourceType,
 			pageIndex: documentChunks.pageIndex,
 			content: documentChunks.content,
 			createdAt: notebookSources.createdAt
@@ -57,6 +59,7 @@ export const GET: RequestHandler = async ({ params }) => {
 				chunkId: row.chunkId,
 				documentId: row.documentId,
 				documentTitle: row.documentTitle,
+				sourceType: row.sourceType,
 				pageIndex: row.pageIndex,
 				preview: preview(row.content),
 				createdAt: row.createdAt
@@ -66,7 +69,9 @@ export const GET: RequestHandler = async ({ params }) => {
 };
 
 // Attach chunk ids to this notebook (deduped — re-sending an already-attached
-// chunk is a no-op).
+// chunk is a no-op). Returns each chunk's full text alongside its citation
+// details so callers (e.g. "Save chunk") can drop the actual content into a
+// notebook page, not just a silent reference.
 export const POST: RequestHandler = async ({ params, request }) => {
 	const notebookId = params.id;
 	if (!notebookId) return json({ error: 'Missing notebook id' }, { status: 400 });
@@ -84,7 +89,22 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			});
 	}
 
-	return json({ ok: true, added: chunkIds.length });
+	const sources = chunkIds.length
+		? await db
+				.select({
+					chunkId: documentChunks.id,
+					documentId: documents.id,
+					documentTitle: documents.title,
+					pageIndex: documentChunks.pageIndex,
+					sourceType: documents.sourceType,
+					content: documentChunks.content
+				})
+				.from(documentChunks)
+				.innerJoin(documents, eq(documents.id, documentChunks.documentId))
+				.where(inArray(documentChunks.id, chunkIds))
+		: [];
+
+	return json({ ok: true, added: chunkIds.length, sources });
 };
 
 // Clear every source attached to this notebook.

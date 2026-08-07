@@ -32,7 +32,7 @@
 	}
 </script>
 
-<div class="relative min-h-0">
+<div class="relative min-h-0 min-w-0">
 	<Textarea
 		class="h-full min-h-0 resize-none rounded-none border-0 bg-transparent px-4 py-3 pb-8 shadow-none focus-visible:border-transparent focus-visible:ring-0"
 		bind:value={notes}

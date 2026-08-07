@@ -30,11 +30,13 @@ export const API_DOCUMENTS = {
 	ACTIVATION: '/documents/activation',
 	BASE: '/documents',
 	DIRECTORIES: '/documents/directories',
+	FAILURES: '/documents/failures',
 	FOLDERS: '/documents/folders',
 	IDS: '/documents/ids',
 	LIST: '/documents/list',
 	TAGS: '/documents/tags',
 	byId: (id: string) => `/documents/${segment(id)}`,
+	failure: (id: string) => `/documents/failures/${segment(id)}`,
 	folder: (id: string) => `/documents/folders/${segment(id)}`
 };
 
@@ -54,7 +56,9 @@ export const API_NOTEBOOKS = {
 	selectPage: (id: string, pageId: string) =>
 		`/notebooks/${segment(id)}/pages/${segment(pageId)}/select`,
 	sources: (id: string) => `/notebooks/${segment(id)}/sources`,
-	source: (id: string, sourceId: string) => `/notebooks/${segment(id)}/sources/${segment(sourceId)}`
+	source: (id: string, sourceId: string) =>
+		`/notebooks/${segment(id)}/sources/${segment(sourceId)}`,
+	masterCorpus: (id: string) => `/notebooks/${segment(id)}/master-corpus`
 };
 
 export const API_LOCAL_MODELS = {

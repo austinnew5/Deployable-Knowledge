@@ -101,8 +101,26 @@ export class DocumentsRepository {
 
 	static async list(options: ApiDocumentListQuery = {}): Promise<ApiDocumentListResponse> {
 		const where = listConditions(options);
-		const direction = options.sort === 'desc' ? desc : asc;
-		const byTitle = direction(sql`${documents.title} COLLATE NOCASE`);
+		// most/least-chunks need the chunk count in the ORDER BY itself (not just
+		// looked up afterward for display), so the join+groupBy always runs and
+		// the other sort modes just ignore the extra column
+		const chunkCountExpr = count(documentChunks.id);
+		const orderBy = ((): SQL[] => {
+			switch (options.sort) {
+				case 'title-desc':
+					return [desc(sql`${documents.title} COLLATE NOCASE`)];
+				case 'newest':
+					return [desc(documents.createdAt)];
+				case 'oldest':
+					return [asc(documents.createdAt)];
+				case 'most-chunks':
+					return [desc(chunkCountExpr)];
+				case 'least-chunks':
+					return [asc(chunkCountExpr)];
+				default:
+					return [asc(sql`${documents.title} COLLATE NOCASE`)];
+			}
+		})();
 
 		const page = db
 			.select({
@@ -110,12 +128,16 @@ export class DocumentsRepository {
 				title: documents.title,
 				sourcePath: documents.sourcePath,
 				sourceType: documents.sourceType,
+				createdAt: documents.createdAt,
 				updatedAt: documents.updatedAt,
-				active: documents.active
+				active: documents.active,
+				chunkCount: chunkCountExpr
 			})
 			.from(documents)
+			.leftJoin(documentChunks, eq(documentChunks.documentId, documents.id))
 			.where(where)
-			.orderBy(byTitle, asc(documents.id));
+			.groupBy(documents.id)
+			.orderBy(...orderBy, asc(documents.id));
 
 		const [rows, [{ total }], availableTags, folderCounts] = await Promise.all([
 			options.limit === undefined ? page : page.limit(options.limit).offset(options.offset ?? 0),
@@ -130,7 +152,7 @@ export class DocumentsRepository {
 		]);
 
 		const documentIds = rows.map(({ id }) => id);
-		const [tagRows, chunkRows, folderRows] = documentIds.length
+		const [tagRows, folderRows] = documentIds.length
 			? await Promise.all([
 					db
 						.select({ documentId: documentTags.documentId, tag: documentTags.tag })
@@ -138,16 +160,11 @@ export class DocumentsRepository {
 						.where(inArray(documentTags.documentId, documentIds))
 						.orderBy(asc(documentTags.tag)),
 					db
-						.select({ documentId: documentChunks.documentId, total: count() })
-						.from(documentChunks)
-						.where(inArray(documentChunks.documentId, documentIds))
-						.groupBy(documentChunks.documentId),
-					db
 						.select({ documentId: syncedFiles.documentId, folderId: syncedFiles.folderId })
 						.from(syncedFiles)
 						.where(inArray(syncedFiles.documentId, documentIds))
 				])
-			: [[], [], []];
+			: [[], []];
 
 		const tagsByDocument = new Map<string, string[]>();
 
@@ -157,12 +174,10 @@ export class DocumentsRepository {
 			tagsByDocument.set(row.documentId, values);
 		}
 
-		const chunkCountByDocument = new Map(chunkRows.map((row) => [row.documentId, row.total]));
 		const folderByDocument = new Map(folderRows.map((row) => [row.documentId, row.folderId]));
 
 		const documentRows: DocumentRow[] = rows.map((row) => ({
 			...row,
-			chunkCount: chunkCountByDocument.get(row.id) ?? 0,
 			folderId: folderByDocument.get(row.id) ?? null,
 			tags: tagsByDocument.get(row.id) ?? []
 		}));

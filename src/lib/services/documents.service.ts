@@ -6,6 +6,7 @@ import type {
 	ApiDocumentIngestResult,
 	ApiDocumentDirectoryQuery,
 	ApiDocumentDirectoryResponse,
+	ApiDocumentFailuresResponse,
 	ApiDocumentFolderRequest,
 	ApiDocumentFoldersResponse,
 	ApiDocumentFolderSyncEvent,
@@ -88,6 +89,18 @@ export class DocumentsService {
 		return apiDelete<{ removed: number }>(API_DOCUMENTS.BASE);
 	}
 
+	static listFailures() {
+		return apiFetch<ApiDocumentFailuresResponse>(API_DOCUMENTS.FAILURES);
+	}
+
+	static dismissFailure(id: string) {
+		return apiDelete<{ ok: true }>(API_DOCUMENTS.failure(id));
+	}
+
+	static clearFailures() {
+		return apiDelete<{ ok: true }>(API_DOCUMENTS.FAILURES);
+	}
+
 	static async ingestPath(
 		path: string,
 		onProgress?: (progress: ApiDocumentIngestProgress) => void,
@@ -98,6 +111,17 @@ export class DocumentsService {
 			body: JSON.stringify({ path } satisfies ApiDocumentPathRequest),
 			signal
 		});
+		return this.readIngestStream(response, onProgress, signal);
+	}
+
+	static async uploadFile(
+		file: File,
+		onProgress?: (progress: ApiDocumentIngestProgress) => void,
+		signal?: AbortSignal
+	): Promise<ApiDocumentIngestResult> {
+		const body = new FormData();
+		body.append('file', file);
+		const response = await apiStream(API_DOCUMENTS.BASE, { method: 'POST', body, signal });
 		return this.readIngestStream(response, onProgress, signal);
 	}
 

@@ -15,6 +15,7 @@
 	import type { ApiDocumentFolderSyncResponse, ApiSyncedFolder, DocumentRow } from '$lib/types';
 	import DocumentBulkActionsBar from './DocumentBulkActionsBar.svelte';
 	import DocumentFilterBar from './DocumentFilterBar.svelte';
+	import DocumentIngestFailures from './DocumentIngestFailures.svelte';
 	import DocumentList from './DocumentList.svelte';
 	import DocumentModeBar from './DocumentModeBar.svelte';
 
@@ -55,11 +56,17 @@
 	let tagPickerOpen = $state(false);
 	let tagPickerMode = $state<TagPickerMode>('add');
 	let status = $state('');
+	let dragActive = $state(false);
+	let dragDepth = 0;
 
 	const busy = $derived(uploading || documentsStore.loading || documentsStore.syncing);
 	const selectedCount = $derived(documentsStore.selectedIds.size);
 
-	onMount(() => void reloadLibrary());
+	onMount(() => {
+		void reloadLibrary();
+		window.addEventListener('paste', handlePaste);
+		return () => window.removeEventListener('paste', handlePaste);
+	});
 
 	async function reloadLibrary(): Promise<void> {
 		await documentsStore.load();
@@ -77,17 +84,118 @@
 				try {
 					await documentsStore.ingestPath(path);
 					succeeded += 1;
-				} catch (error) {
+				} catch {
+					// swallow here - the ingest failures banner below already
+					// shows this once documentsStore reloads
 					failed += 1;
-					toast.error(error instanceof Error ? error.message : String(error));
 				}
 			}
 			status = `Added ${succeeded} file${succeeded === 1 ? '' : 's'}${failed ? `; ${failed} failed` : ''}.`;
 			if (succeeded) toast.success(`${succeeded} file${succeeded === 1 ? '' : 's'} ingested`);
+			// a failed ingest doesn't reload the store on its own, so pull the
+			// failures list ourselves or the banner never shows up
+			if (failed) await reloadLibrary();
 		} finally {
 			uploading = false;
 			documentsStore.progress = null;
 		}
+	}
+
+	// Lets a file copied in the OS file browser (Ctrl+C) be pasted straight into the
+	// window (Ctrl+V) instead of requiring the folder picker.
+	async function uploadFiles(files: File[]): Promise<void> {
+		if (!files.length || busy) return;
+		uploading = true;
+		let succeeded = 0;
+		let failed = 0;
+		try {
+			for (const file of files) {
+				try {
+					await documentsStore.uploadFile(file);
+					succeeded += 1;
+				} catch {
+					// swallow here - the ingest failures banner below already
+					// shows this once documentsStore reloads
+					failed += 1;
+				}
+			}
+			status = `Added ${succeeded} file${succeeded === 1 ? '' : 's'}${failed ? `; ${failed} failed` : ''}.`;
+			if (succeeded) toast.success(`${succeeded} file${succeeded === 1 ? '' : 's'} ingested`);
+			// a failed ingest doesn't reload the store on its own, so pull the
+			// failures list ourselves or the banner never shows up
+			if (failed) await reloadLibrary();
+		} finally {
+			uploading = false;
+			documentsStore.progress = null;
+		}
+	}
+
+	// .files is the common case, but some Chromium builds only populate .items for an
+	// OS-level file copy (e.g. Explorer's Ctrl+C) rather than .files directly - check
+	// both before giving up.
+	function filesFromClipboard(data: DataTransfer): File[] {
+		if (data.files.length > 0) return [...data.files];
+
+		const fromItems: File[] = [];
+		for (const item of data.items) {
+			if (item.kind !== 'file') continue;
+			const file = item.getAsFile();
+			if (file) fromItems.push(file);
+		}
+		return fromItems;
+	}
+
+	function handlePaste(event: ClipboardEvent): void {
+		if (busy) return;
+		if (!event.clipboardData) return;
+		const files = filesFromClipboard(event.clipboardData);
+		if (files.length === 0) {
+			// Only warn when the clipboard actually had *something* - otherwise a
+			// completely unrelated Ctrl+V (e.g. pasting text into another window)
+			// would trigger a confusing toast every time.
+			if (event.clipboardData.types.length > 0) {
+				console.debug('[paste] clipboard types with no usable file:', event.clipboardData.types);
+				toast.error(
+					`Nothing to upload from the clipboard (saw: ${event.clipboardData.types.join(', ') || 'nothing'}). Copy the file itself (Ctrl+C in your file browser), not a path or a shortcut to it.`
+				);
+			}
+			return;
+		}
+
+		event.preventDefault();
+		void uploadFiles(files);
+	}
+
+	// Paste can't reliably see files copied from the OS file browser (Chromium doesn't
+	// consistently expose them through clipboardData.files), so drag-and-drop is the
+	// dependable path for getting a file in without the folder picker.
+	function handleDragEnter(event: DragEvent): void {
+		if (!event.dataTransfer?.types.includes('Files')) return;
+		event.preventDefault();
+		dragDepth += 1;
+		dragActive = true;
+	}
+
+	function handleDragOver(event: DragEvent): void {
+		if (!event.dataTransfer?.types.includes('Files')) return;
+		event.preventDefault();
+	}
+
+	function handleDragLeave(event: DragEvent): void {
+		if (!event.dataTransfer?.types.includes('Files')) return;
+		event.preventDefault();
+		dragDepth = Math.max(0, dragDepth - 1);
+		if (dragDepth === 0) dragActive = false;
+	}
+
+	function handleDrop(event: DragEvent): void {
+		dragDepth = 0;
+		dragActive = false;
+		const files = event.dataTransfer?.files;
+		if (!files || files.length === 0) return;
+
+		event.preventDefault();
+		void uploadFiles([...files]);
 	}
 
 	function syncSummary(result: ApiDocumentFolderSyncResponse): string {
@@ -212,6 +320,22 @@
 		}
 	}
 
+	async function dismissFailure(id: string): Promise<void> {
+		try {
+			await documentsStore.dismissFailure(id);
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	async function clearFailures(): Promise<void> {
+		try {
+			await documentsStore.clearFailures();
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	function openBulkPicker(mode: TagPickerMode): void {
 		if (!documentsStore.tags.length) {
 			toast.info('Create a tag first');
@@ -247,12 +371,30 @@
 	contentClass="overflow-hidden"
 	contentLabel="Documents"
 >
-	<div class="flex h-full min-h-0 flex-col gap-3">
+	<div
+		class={[
+			'relative flex h-full min-h-0 flex-col gap-3',
+			dragActive && 'outline-2 outline-dashed outline-primary outline-offset-[-2px]'
+		]}
+		ondragenter={handleDragEnter}
+		ondragleave={handleDragLeave}
+		ondragover={handleDragOver}
+		ondrop={handleDrop}
+		role="region"
+		aria-label="Document drop zone"
+	>
+		{#if dragActive}
+			<div
+				class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-background/90 text-sm font-medium text-primary"
+			>
+				Drop to upload
+			</div>
+		{/if}
 		<DocumentFilterBar
 			bind:query={() => documentsStore.query, (value) => documentsStore.setQuery(value)}
 			onCreateTag={createTag}
 			onDeleteTag={(tag) => (pendingDeleteTag = tag)}
-			onToggleSort={() => documentsStore.toggleSort()}
+			onSortChange={(mode) => documentsStore.setSort(mode)}
 			onToggleTag={(tag) => documentsStore.toggleTagFilter(tag)}
 			selectedTags={documentsStore.tagFilters}
 			sort={documentsStore.sort}
@@ -266,6 +408,11 @@
 			onRemoveAll={() => (pendingRemoveAll = true)}
 		/>
 		{#if status}<p class="text-xs text-muted-foreground">{status}</p>{/if}
+		<DocumentIngestFailures
+			failures={documentsStore.failures}
+			onClearAll={clearFailures}
+			onDismiss={dismissFailure}
+		/>
 		<div class="text-xs text-muted-foreground">
 			{selectedCount} selected. With none selected, chat searches all documents.
 		</div>

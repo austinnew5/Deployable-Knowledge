@@ -1,10 +1,20 @@
+import { APP_PREVIEW } from '$lib/constants';
 import { NotebooksService } from '$lib/services';
 import type {
+	ApiNotebookMasterCorpusResponse,
+	ApiNotebookSourceContent,
 	NotebookPage,
 	NotebookSourceItem,
 	NotebookStateResponse,
 	NotebookWithPages
 } from '$lib/types';
+
+function formatChunkForPage(source: ApiNotebookSourceContent): string {
+	const title = source.documentTitle.trim() || 'Source';
+	const page = source.pageIndex + 1;
+	const href = APP_PREVIEW.page(source.documentId, source.pageIndex);
+	return `${source.content.trim()}\n\n([${title}, p. ${page}](${href}))`;
+}
 
 class NotebooksStore {
 	private _notebooks = $state<NotebookWithPages[]>([]);
@@ -12,6 +22,7 @@ class NotebooksStore {
 	private _sources = $state<NotebookSourceItem[]>([]);
 	exportingNotebookId = $state<string | null>(null);
 	exportingPageId = $state<string | null>(null);
+	addingToMasterCorpusId = $state<string | null>(null);
 	loading = $state(false);
 	reordering = $state(false);
 	sourcesLoading = $state(false);
@@ -114,6 +125,20 @@ class NotebooksStore {
 		}
 	}
 
+	async addToMasterCorpus(
+		notebookId: string,
+		pageIds: string[]
+	): Promise<ApiNotebookMasterCorpusResponse | null> {
+		if (this.addingToMasterCorpusId || pageIds.length === 0) return null;
+
+		this.addingToMasterCorpusId = notebookId;
+		try {
+			return await NotebooksService.addToMasterCorpus(notebookId, pageIds);
+		} finally {
+			this.addingToMasterCorpusId = null;
+		}
+	}
+
 	async importCollection(path: string): Promise<void> {
 		if (!path.trim()) return;
 		this.apply(await NotebooksService.importCollection(path));
@@ -203,17 +228,21 @@ class NotebooksStore {
 		}
 	}
 
-	async addSources(chunkIds: string[]): Promise<void> {
-		if (!this._activeNotebookId || !chunkIds.length) return;
-		await NotebooksService.addSources(this._activeNotebookId, chunkIds);
+	async addSources(chunkIds: string[]): Promise<ApiNotebookSourceContent[]> {
+		if (!this._activeNotebookId || !chunkIds.length) return [];
+		const response = await NotebooksService.addSources(this._activeNotebookId, chunkIds);
 		await this.loadSources();
+		return response.sources;
 	}
 
+	// Also drops the chunk's text into the open page, so "Send to Notebook" leaves
+	// something you can see, not just a silent background source. (name is stale from before the rename)
 	async saveChunk(chunkId: string): Promise<string> {
 		await this.load();
 		const notebook = this.activeNotebook;
 		if (!notebook) throw new Error('Create or open a notebook first.');
-		await this.addSources([chunkId]);
+		const [source] = await this.addSources([chunkId]);
+		if (source && this.activePage) await this.appendToActivePage(formatChunkForPage(source));
 		return notebook.title;
 	}
 

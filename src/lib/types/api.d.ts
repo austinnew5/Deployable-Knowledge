@@ -4,6 +4,7 @@ import type {
 	AssistantProfile,
 	Document,
 	DocumentChunk,
+	IngestFailure,
 	NotebookSource,
 	NotebookWithPages,
 	SyncedFolder
@@ -72,7 +73,7 @@ export type ApiDocumentIngestEvent =
 
 export type DocumentRow = Pick<
 	Document,
-	'id' | 'title' | 'sourcePath' | 'sourceType' | 'updatedAt' | 'active'
+	'id' | 'title' | 'sourcePath' | 'sourceType' | 'createdAt' | 'updatedAt' | 'active'
 > & {
 	chunkCount: number;
 	folderId: string | null;
@@ -83,12 +84,20 @@ export type DocumentListMode = 'all' | 'active' | 'inactive';
 
 export type SortDirection = 'asc' | 'desc';
 
+export type DocumentSortMode =
+	| 'title-asc'
+	| 'title-desc'
+	| 'oldest'
+	| 'newest'
+	| 'most-chunks'
+	| 'least-chunks';
+
 export interface ApiDocumentListQuery {
 	limit?: number;
 	mode?: DocumentListMode;
 	offset?: number;
 	query?: string;
-	sort?: SortDirection;
+	sort?: DocumentSortMode;
 	tags?: string[];
 }
 
@@ -106,6 +115,10 @@ export interface ApiDocumentListResponse {
 
 export interface ApiDocumentIdsResponse {
 	ids: string[];
+}
+
+export interface ApiDocumentFailuresResponse {
+	failures: IngestFailure[];
 }
 
 export type TranscriptChunkRow = Pick<
@@ -216,6 +229,32 @@ export interface ApiNotebookSourcesRequest {
 	chunk_ids: string[];
 }
 
+export interface ApiNotebookSourceContent {
+	chunkId: string;
+	documentId: string;
+	documentTitle: string;
+	pageIndex: number;
+	sourceType: Document['sourceType'];
+	content: string;
+}
+
+export interface ApiNotebookSourcesResponse {
+	added: number;
+	ok: true;
+	sources: ApiNotebookSourceContent[];
+}
+
+export interface ApiNotebookMasterCorpusRequest {
+	pageIds: string[];
+}
+
+export interface ApiNotebookMasterCorpusResponse {
+	chunkCount: number;
+	documentId: string;
+	pageCount: number;
+	title: string;
+}
+
 export interface NotebookStateResponse {
 	activeNotebookId: string | null;
 	notebooks: NotebookWithPages[];
@@ -225,6 +264,7 @@ export type NotebookSourceItem = Pick<NotebookSource, 'id' | 'chunkId' | 'create
 	Pick<DocumentChunk, 'pageIndex'> & {
 		documentId: Document['id'];
 		documentTitle: Document['title'];
+		sourceType: Document['sourceType'];
 		preview: string;
 	};
 
