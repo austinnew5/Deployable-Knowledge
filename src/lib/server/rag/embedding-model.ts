@@ -13,21 +13,24 @@ export const EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
 export const EMBEDDING_DTYPE = 'q8';
 
 const EMBEDDING_BATCH_SIZE = 16;
-const EMBEDDING_CACHE_DIR = resolve(process.cwd(), '.cache', 'transformersjs');
+
+// Shared by every local transformers.js model (embedding + reranker) so they
+// all live in, and are checked against, the same on-disk cache.
+export const TRANSFORMERS_CACHE_DIR = resolve(process.cwd(), '.cache', 'transformersjs');
 
 export const INFERENCE_THREADS = Math.max(1, Math.min(8, Math.floor(availableParallelism() / 4)));
 
 type EmbeddingType = 'search_document' | 'search_query';
 
-env.cacheDir = EMBEDDING_CACHE_DIR;
-env.localModelPath = EMBEDDING_CACHE_DIR;
+env.cacheDir = TRANSFORMERS_CACHE_DIR;
+env.localModelPath = TRANSFORMERS_CACHE_DIR;
 env.allowRemoteModels = true;
 
 let embeddingPipeline: Promise<FeatureExtractionPipeline> | undefined;
 
 export function isEmbeddingModelInstalled() {
 	return ModelRegistry.is_pipeline_cached('feature-extraction', EMBEDDING_MODEL, {
-		cache_dir: EMBEDDING_CACHE_DIR,
+		cache_dir: TRANSFORMERS_CACHE_DIR,
 		dtype: EMBEDDING_DTYPE
 	});
 }
@@ -42,7 +45,7 @@ async function getEmbeddingPipeline(onProgress?: ProgressCallback) {
 		console.log(`[Embedding] Loading ${EMBEDDING_MODEL} on ${INFERENCE_THREADS} thread(s)...`);
 		embeddingPipeline = pipeline('feature-extraction', EMBEDDING_MODEL, {
 			dtype: EMBEDDING_DTYPE,
-			cache_dir: EMBEDDING_CACHE_DIR,
+			cache_dir: TRANSFORMERS_CACHE_DIR,
 			session_options: { intraOpNumThreads: INFERENCE_THREADS, interOpNumThreads: 1 },
 			progress_callback: onProgress
 		})

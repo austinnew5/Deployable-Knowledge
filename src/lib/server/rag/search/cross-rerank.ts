@@ -1,7 +1,14 @@
 // Cross-encoder relevance scorer.
 
-import { AutoModelForSequenceClassification, AutoTokenizer } from '@huggingface/transformers';
-import { INFERENCE_THREADS } from '../embedding-model';
+import {
+	AutoModelForSequenceClassification,
+	AutoTokenizer,
+	ModelRegistry,
+	type ProgressCallback
+} from '@huggingface/transformers';
+import { INFERENCE_THREADS, TRANSFORMERS_CACHE_DIR } from '../embedding-model';
+
+export const RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
 export type RerankCandidate = {
 	chunkId: string;
@@ -16,19 +23,28 @@ type ClassificationModel = Awaited<
 let tokenizer: Tokenizer | undefined;
 let model: ClassificationModel | undefined;
 
-async function initializeModel() {
+export function isRerankModelInstalled(): Promise<boolean> {
+	return ModelRegistry.is_cached(RERANK_MODEL, { cache_dir: TRANSFORMERS_CACHE_DIR });
+}
+
+async function initializeModel(progress_callback?: ProgressCallback) {
 	if (!tokenizer) {
-		const modelId = 'Xenova/ms-marco-MiniLM-L-6-v2';
-		tokenizer = await AutoTokenizer.from_pretrained(modelId);
+		tokenizer = await AutoTokenizer.from_pretrained(RERANK_MODEL, { progress_callback });
 	}
 	if (!model) {
-		const modelId = 'Xenova/ms-marco-MiniLM-L-6-v2';
-		model = await AutoModelForSequenceClassification.from_pretrained(modelId, {
-			session_options: { intraOpNumThreads: INFERENCE_THREADS, interOpNumThreads: 1 }
+		model = await AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL, {
+			session_options: { intraOpNumThreads: INFERENCE_THREADS, interOpNumThreads: 1 },
+			progress_callback
 		});
 	}
 
 	return { tokenizer, model };
+}
+
+// Explicit install step so the reranker is never a silent first-use network
+// dependency — mirrors installEmbeddingModel in ../embedding-model.
+export function installRerankModel(progress_callback: ProgressCallback): Promise<void> {
+	return initializeModel(progress_callback).then(() => undefined);
 }
 
 export type RerankedCandidate = RerankCandidate & { relevance: number };

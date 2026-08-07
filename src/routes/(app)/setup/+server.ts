@@ -1,19 +1,16 @@
 import { json } from '@sveltejs/kit';
-import type { ApiEmbeddingModelInstallEvent } from '$lib/types';
-import {
-	EMBEDDING_DTYPE,
-	EMBEDDING_MODEL,
-	installEmbeddingModel,
-	isEmbeddingModelInstalled
-} from '$lib/server/rag/embedding-model';
+import type { ApiSearchSetupEvent, ApiSearchSetupStage } from '$lib/types';
+import { installEmbeddingModel, isEmbeddingModelInstalled } from '$lib/server/rag/embedding-model';
+import { installRerankModel, isRerankModelInstalled } from '$lib/server/rag/search/cross-rerank';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async () => {
-	return json({
-		installed: await isEmbeddingModelInstalled(),
-		model: EMBEDDING_MODEL,
-		dtype: EMBEDDING_DTYPE
-	});
+	const [embeddingInstalled, rerankInstalled] = await Promise.all([
+		isEmbeddingModelInstalled(),
+		isRerankModelInstalled()
+	]);
+
+	return json({ installed: embeddingInstalled && rerankInstalled });
 };
 
 export const POST: RequestHandler = async () => {
@@ -22,7 +19,7 @@ export const POST: RequestHandler = async () => {
 
 	const stream = new ReadableStream({
 		async start(controller) {
-			const send = (event: ApiEmbeddingModelInstallEvent) => {
+			const send = (event: ApiSearchSetupEvent) => {
 				if (!connected) return;
 
 				try {
@@ -32,22 +29,42 @@ export const POST: RequestHandler = async () => {
 				}
 			};
 
-			try {
-				await installEmbeddingModel((progress) => {
-					if (progress.status !== 'progress_total') return;
+			let currentStage: ApiSearchSetupStage = 'embedding';
 
-					send({
-						status: 'progress',
-						progress: progress.progress,
-						loaded: progress.loaded,
-						total: progress.total
-					});
+			const installStage = async (
+				stage: ApiSearchSetupStage,
+				isInstalled: () => Promise<boolean>,
+				install: (
+					onProgress: (progress: number, loaded: number, total: number) => void
+				) => Promise<unknown>
+			) => {
+				currentStage = stage;
+				if (await isInstalled()) return;
+
+				await install((progress, loaded, total) => {
+					send({ status: 'progress', stage, progress, loaded, total });
 				});
+			};
+
+			try {
+				await installStage('embedding', isEmbeddingModelInstalled, (onProgress) =>
+					installEmbeddingModel((progress) => {
+						if (progress.status !== 'progress_total') return;
+						onProgress(progress.progress, progress.loaded, progress.total);
+					})
+				);
+				await installStage('rerank', isRerankModelInstalled, (onProgress) =>
+					installRerankModel((progress) => {
+						if (progress.status !== 'progress_total') return;
+						onProgress(progress.progress, progress.loaded, progress.total);
+					})
+				);
 				send({ status: 'ready' });
 			} catch (error) {
 				send({
 					status: 'error',
-					message: error instanceof Error ? error.message : 'Embedding model download failed'
+					stage: currentStage,
+					message: error instanceof Error ? error.message : 'Search model download failed'
 				});
 			} finally {
 				if (connected) controller.close();

@@ -23,7 +23,7 @@ class SetupStore {
 		this.progress = {
 			percent: 0,
 			label: 'Preparing semantic search',
-			message: 'Downloading the embedding model.'
+			message: 'Downloading the models document search needs to run offline.'
 		};
 		try {
 			await SetupService.install((progress) => (this.progress = progress));
@@ -36,7 +36,7 @@ class SetupStore {
 
 	private showError(error: unknown): void {
 		this.open = true;
-		this.error = error instanceof Error ? error.message : 'Embedding model setup failed';
+		this.error = error instanceof Error ? error.message : 'Search model setup failed';
 	}
 }
 

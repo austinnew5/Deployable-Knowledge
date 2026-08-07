@@ -298,16 +298,25 @@ export interface ApiSessionTitleRequest {
 	title: string;
 }
 
-export interface ApiEmbeddingModelStatus {
+// Covers every local transformers.js model the search pipeline depends on
+// (the embedding model and the cross-encoder reranker), so "installed" means
+// document search is fully usable offline, not just semantic search alone.
+export type ApiSearchSetupStage = 'embedding' | 'rerank';
+
+export interface ApiSearchSetupStatus {
 	installed: boolean;
-	model: string;
-	dtype: string;
 }
 
-export type ApiEmbeddingModelInstallEvent =
-	| { status: 'progress'; progress: number; loaded: number; total: number }
+export type ApiSearchSetupEvent =
+	| {
+			status: 'progress';
+			stage: ApiSearchSetupStage;
+			progress: number;
+			loaded: number;
+			total: number;
+	  }
 	| { status: 'ready' }
-	| { status: 'error'; message: string };
+	| { status: 'error'; stage: ApiSearchSetupStage; message: string };
 
 export interface ApiLocalModelInfo {
 	fileName: string;
